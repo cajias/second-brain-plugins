@@ -64,6 +64,19 @@ mkdir my-knowledge-base && cd my-knowledge-base
 | `/kb-lint` | Health checks: orphaned notes, broken links, rogue tags, knowledge gaps |
 | `/kb-index` | Rebuild the LanceDB vector index (full or incremental) |
 
+## Agents
+
+The plugin includes 4 autonomous agents that can work on your wiki independently:
+
+| Agent | What it does |
+|-------|-------------|
+| **compile-agent** | Processes all pending inbox items end-to-end: reads raw docs, extracts atomic ideas, deduplicates, writes notes with wikilinks, updates the index |
+| **gap-researcher** | Analyzes your wiki for knowledge gaps (underrepresented tags, missing topic bridges), then researches and creates notes to fill them |
+| **wikilink-agent** | Scans for orphaned notes and adds meaningful `[[wikilinks]]` to connect them into a knowledge graph |
+| **quality-reviewer** | Audits recently compiled notes for accuracy, proper tagging, confidence calibration, and connection quality |
+
+These agents can be dispatched to work in the background while you continue other work. They're the "maintenance crew" that keeps your wiki healthy and interconnected.
+
 ## How It Works
 
 ### Notes are atomic
