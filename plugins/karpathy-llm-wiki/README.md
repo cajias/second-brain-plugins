@@ -13,31 +13,25 @@ This plugin implements that full loop as a set of Claude Code commands.
 
 ## The Workflow
 
-```
-           ┌──────────────────────────────────────────────┐
-           │                                              │
-           v                                              │
-  ┌─────────────┐    ┌──────────────┐    ┌────────────┐  │
-  │  /kb-ingest  │───>│  /kb-compile  │───>│  /kb-query  │──┘
-  │              │    │              │    │            │
-  │  PDFs        │    │  Extract     │    │  Semantic  │
-  │  Articles    │    │  atomic      │    │  search    │
-  │  Web clips   │    │  ideas       │    │  across    │
-  │  Sessions    │    │  Dedup       │    │  261+      │
-  │  Text        │    │  Wikilink    │    │  notes     │
-  └─────────────┘    └──────────────┘    └────────────┘
-                           │
-                           v
-                    ┌──────────────┐    ┌────────────┐
-                    │  /kb-lint     │───>│  /kb-charts │
-                    │              │    │            │
-                    │  Orphans     │    │  Tag dist  │
-                    │  Rogue tags  │    │  Growth    │
-                    │  Broken      │    │  Health    │
-                    │  links       │    │  dashboard │
-                    │  Gap         │    │            │
-                    │  analysis    │    │            │
-                    └──────────────┘    └────────────┘
+```mermaid
+flowchart LR
+    subgraph Ingest
+        A["/kb-ingest\nPDFs, articles,\nweb clips, sessions"]
+    end
+    subgraph Compile
+        B["/kb-compile\nExtract atomic ideas\nDedup · Wikilink"]
+    end
+    subgraph Query
+        C["/kb-query\nSemantic search\nacross all notes"]
+    end
+    subgraph Maintain
+        D["/kb-lint\nOrphans · Rogue tags\nBroken links · Gaps"]
+        E["/kb-charts\nTag dist · Growth\nHealth dashboard"]
+    end
+
+    A --> B --> C
+    C -->|explorations\nfeed back in| A
+    B --> D --> E
 ```
 
 ## Install
