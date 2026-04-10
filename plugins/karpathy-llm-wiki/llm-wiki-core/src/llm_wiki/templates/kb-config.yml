@@ -1,0 +1,30 @@
+version: "1.0"
+vault_root: "."
+
+paths:
+  raw_inbox: "raw/inbox"
+  raw_sessions: "raw/sessions"
+  raw_artifacts: "raw/artifacts"
+  raw_web: "raw/web"
+  wiki_permanent: "wiki/permanent"
+  wiki_index: "wiki/_index"
+  wiki_meta: "wiki/_meta"
+  output: "output"
+  fleeting: "fleeting"
+
+lancedb:
+  db_path: ".lancedb"
+  table_name: "notes"
+
+compile:
+  batch_size: 10
+  auto_link_threshold: 0.75
+
+lint:
+  orphan_threshold: 0
+  tag_compliance: "strict"
+  index_staleness_hours: 24
+  index_min_coverage_pct: 80
+
+query:
+  default_limit: 10

@@ -1,0 +1,13 @@
+{
+  "name": "second-brain-plugins",
+  "owner": {
+    "name": "cajias"
+  },
+  "plugins": [
+    {
+      "name": "karpathy-llm-wiki",
+      "source": "./plugins/karpathy-llm-wiki",
+      "description": "Karpathy-style personal knowledge wiki — ingest, compile, search, and maintain a semantic knowledge base with Claude Code"
+    }
+  ]
+}
