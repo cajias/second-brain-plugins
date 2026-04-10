@@ -3,14 +3,12 @@
 Reads .kb-config.yml from the wiki root, validates required fields,
 and provides a typed Config dataclass to the rest of the system.
 
-The project root is resolved from an explicit path, the KARPATHY_WIKI_ROOT
-environment variable, or by walking up from cwd looking for .kb-config.yml.
+The project root is detected by walking up from cwd looking for .kb-config.yml.
 All other modules use get_project_root() and load_config() from here.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -19,7 +17,6 @@ import yaml
 
 
 CONFIG_FILENAME = ".kb-config.yml"
-ENV_ROOT = "KARPATHY_WIKI_ROOT"
 
 
 @dataclass
@@ -76,44 +73,17 @@ class WikiConfig:
 
 
 def get_project_root(start: Optional[Path] = None) -> Path:
-    """Find the wiki project root.
-
-    Resolution order:
-      1. If ``start`` is provided, walk up from ``start`` looking for
-         .kb-config.yml (env var is ignored).
-      2. If ``start`` is None and ``KARPATHY_WIKI_ROOT`` is set, use it
-         directly as the project root (must contain .kb-config.yml).
-      3. Otherwise, walk up from cwd looking for .kb-config.yml.
+    """Walk up from start (default: cwd) looking for .kb-config.yml.
 
     Args:
-        start: Directory to begin the upward search from. If provided,
-               the environment variable is ignored.
+        start: Directory to start searching from. Defaults to cwd.
 
     Returns:
         Path to the project root directory containing .kb-config.yml.
 
     Raises:
-        FileNotFoundError: If no .kb-config.yml is found.
+        FileNotFoundError: If no .kb-config.yml is found within 20 parent levels.
     """
-    if start is None:
-        env_root = os.environ.get(ENV_ROOT)
-        if env_root is not None:
-            if not env_root.strip():
-                raise FileNotFoundError(
-                    f"{ENV_ROOT} is set but empty. "
-                    f"Unset it or provide a valid path containing {CONFIG_FILENAME}.",
-                )
-            candidate = Path(env_root).resolve()
-            if not candidate.is_dir():
-                raise FileNotFoundError(
-                    f"{ENV_ROOT}={env_root} is not a directory (resolved to {candidate}).",
-                )
-            if (candidate / CONFIG_FILENAME).exists():
-                return candidate
-            raise FileNotFoundError(
-                f"{ENV_ROOT}={env_root} does not contain {CONFIG_FILENAME}.",
-            )
-
     current = Path(start) if start else Path.cwd()
     current = current.resolve()
 
@@ -122,13 +92,12 @@ def get_project_root(start: Optional[Path] = None) -> Path:
             return current
         parent = current.parent
         if parent == current:
-            break
+            break  # Reached filesystem root
         current = parent
 
     raise FileNotFoundError(
         f"Cannot find {CONFIG_FILENAME}. "
-        f"Run 'kb init' to create a new knowledge base, set {ENV_ROOT}, "
-        "or cd into a wiki directory.",
+        "Run 'kb init' to create a new knowledge base, or cd into a wiki directory."
     )
 
 

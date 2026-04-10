@@ -50,62 +50,11 @@ _CRON_LINES = [
 ]
 
 
-def _get_cron_block(root: str) -> str:
-    """Build the cron block for the given project root."""
-    return "\n".join(line.format(root=root) for line in _CRON_LINES)
-
-
-def _read_crontab() -> str:
-    """Read the current crontab, returning empty string if none."""
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["crontab", "-l"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.stdout if result.returncode == 0 else ""
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return ""
-
-
-def _write_crontab(content: str) -> None:
-    """Write content as the new crontab."""
-    import subprocess
-    subprocess.run(
-        ["crontab", "-"],
-        input=content,
-        text=True,
-        timeout=5,
-        check=True,
-    )
-
-
-def _remove_kb_block(crontab_text: str) -> str:
-    """Remove the LLM Wiki maintenance block from crontab text."""
-    lines = crontab_text.splitlines()
-    result = []
-    skip = False
-    for line in lines:
-        if line.strip() == "# LLM Wiki maintenance jobs":
-            skip = True
-            continue
-        if skip and line.strip() == "":
-            skip = False
-            continue
-        if skip and (line.strip().startswith("0 ") or line.strip().startswith("*")):
-            continue
-        skip = False
-        result.append(line)
-    return "\n".join(result).rstrip("\n") + "\n" if result else ""
-
-
 @maintenance_app.command("enable")
 def maintenance_enable(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
 ) -> None:
-    """Install maintenance cron jobs into the system crontab."""
+    """Print cron setup instructions for scheduled maintenance."""
     from llm_wiki.core.config import load_config
     try:
         cfg = load_config()
@@ -114,47 +63,30 @@ def maintenance_enable(
         raise typer.Exit(code=1)
 
     root = str(cfg.project_root)
-    cron_block = _get_cron_block(root)
-
-    existing = _read_crontab()
-    cleaned = _remove_kb_block(existing)
-    new_crontab = cleaned.rstrip("\n") + "\n\n" + cron_block + "\n" if cleaned.strip() else cron_block + "\n"
-
-    _write_crontab(new_crontab)
+    lines = [line.format(root=root) for line in _CRON_LINES]
+    cron_block = "\n".join(lines)
 
     if json_output:
-        typer.echo(json.dumps({"action": "enabled", "cron_block": cron_block}))
+        typer.echo(json.dumps({"action": "enable", "cron_block": cron_block}))
     else:
-        typer.echo("Maintenance cron jobs installed:\n")
+        typer.echo("Add the following lines to your crontab (crontab -e):\n")
         typer.echo(cron_block)
-        typer.echo("\nSchedule:")
+        typer.echo("\nThis will run:")
         typer.echo("  - Incremental index rebuild every night at 2am")
         typer.echo("  - Full lint report every Sunday at 3am")
         typer.echo("  - Chart regeneration every Sunday at 4am")
-        typer.echo("\nRun 'kb maintenance status' to verify.")
 
 
 @maintenance_app.command("disable")
 def maintenance_disable(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
 ) -> None:
-    """Remove maintenance cron jobs from the system crontab."""
-    existing = _read_crontab()
-    cleaned = _remove_kb_block(existing)
-
-    if cleaned.strip() == existing.strip():
-        if json_output:
-            typer.echo(json.dumps({"action": "disable", "status": "not_found"}))
-        else:
-            typer.echo("No LLM Wiki maintenance jobs found in crontab.")
-        return
-
-    _write_crontab(cleaned)
-
+    """Print instructions to remove maintenance cron jobs."""
     if json_output:
-        typer.echo(json.dumps({"action": "disabled"}))
+        typer.echo(json.dumps({"action": "disable", "instructions": "Run 'crontab -e' and remove the LLM Wiki lines."}))
     else:
-        typer.echo("LLM Wiki maintenance jobs removed from crontab.")
+        typer.echo("To disable maintenance, run 'crontab -e' and remove the lines")
+        typer.echo("between '# LLM Wiki maintenance jobs' and the next blank line.")
 
 
 @maintenance_app.command("status")

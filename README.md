@@ -6,7 +6,7 @@ A collection of [Claude Code](https://claude.ai/code) plugins for personal knowl
 
 | Plugin | Description | Install |
 |--------|-------------|---------|
-| [karpathy-llm-wiki](plugins/karpathy-llm-wiki/) | Karpathy-style knowledge wiki — ingest, compile, search, and maintain a semantic knowledge base | See [Install](#quick-start) |
+| [karpathy-llm-wiki](plugins/karpathy-llm-wiki/) | Karpathy-style knowledge wiki — ingest, compile, search, and maintain a semantic knowledge base | `claude plugin add cajias/second-brain-plugins --plugin karpathy-llm-wiki` |
 
 ## What is this?
 
@@ -17,8 +17,8 @@ The goal: turn your scattered notes, articles, papers, and conversations into a 
 ## Quick Start
 
 ```bash
-# Install the plugin
-claude plugin add https://code.aws.dev/proserve/product-and-solutions/tools/knowledge-management/second-brain-plugins --plugin karpathy-llm-wiki
+# Install a plugin
+claude plugin add cajias/second-brain-plugins --plugin karpathy-llm-wiki
 
 # Initialize a wiki in any directory
 cd ~/my-wiki
