@@ -71,6 +71,55 @@ The plugin includes 4 autonomous agents that can work on your wiki independently
 
 These agents can be dispatched to work in the background while you continue other work. They're the "maintenance crew" that keeps your wiki healthy and interconnected.
 
+## Skills
+
+Skills are reusable knowledge modules that both commands and agents invoke. They eliminate duplication — the "how to do X" lives in one place.
+
+| Skill | What it knows |
+|-------|--------------|
+| **compile-note** | Extracting atomic ideas, dedup checking, writing notes with frontmatter |
+| **search-and-link** | Finding related notes via semantic search, adding meaningful `[[wikilinks]]` |
+| **lint-and-repair** | Running health checks, interpreting results, conservative auto-repair |
+| **gap-analysis** | Identifying underrepresented tags/types, missing bridges, research questions |
+
+```mermaid
+flowchart TD
+    subgraph Skills
+        S1["compile-note"]
+        S2["search-and-link"]
+        S3["lint-and-repair"]
+        S4["gap-analysis"]
+    end
+    subgraph Commands
+        C1["/kb-compile"]
+        C2["/kb-query"]
+        C3["/kb-lint"]
+    end
+    subgraph Agents
+        A1["compile-agent"]
+        A2["wikilink-agent"]
+        A3["quality-reviewer"]
+        A4["gap-researcher"]
+    end
+
+    C1 -.-> S1
+    C1 -.-> S2
+    C2 -.-> S2
+    C3 -.-> S3
+    C3 -.-> S4
+    A1 -.-> S1
+    A1 -.-> S2
+    A2 -.-> S2
+    A2 -.-> S3
+    A3 -.-> S3
+    A3 -.-> S2
+    A4 -.-> S4
+    A4 -.-> S1
+    A4 -.-> S2
+```
+
+**Commands** are interactive (you invoke them, you stay in the loop). **Agents** are autonomous (dispatch them, they work independently). **Skills** are the shared knowledge both use.
+
 ## How It Works
 
 ### Notes are atomic
