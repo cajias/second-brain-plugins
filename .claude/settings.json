@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_FILE_PATH\" | grep -q 'uv.lock'; then echo 'BLOCK: uv.lock is auto-generated — run uv sync instead' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_FILE_PATH\" | grep -qE '\\.py$'; then cd plugins/karpathy-llm-wiki/llm-wiki-core && uv run ruff format --quiet \"$CLAUDE_FILE_PATH\" 2>/dev/null && uv run ruff check --fix --quiet \"$CLAUDE_FILE_PATH\" 2>/dev/null; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

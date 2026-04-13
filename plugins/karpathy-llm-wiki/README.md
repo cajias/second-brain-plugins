@@ -37,11 +37,7 @@ flowchart LR
 ## Install
 
 ```bash
-# From GitLab (code.aws.dev)
 claude plugin add https://code.aws.dev/proserve/product-and-solutions/tools/knowledge-management/second-brain-plugins --plugin karpathy-llm-wiki
-
-# Or from GitHub
-claude plugin add cajias/second-brain-plugins --plugin karpathy-llm-wiki
 ```
 
 Then initialize a wiki in any directory:
