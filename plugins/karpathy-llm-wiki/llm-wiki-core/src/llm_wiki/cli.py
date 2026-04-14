@@ -6,6 +6,9 @@ Uses Typer to expose subcommands: init, ingest, compile, search, lint, index, ch
 from __future__ import annotations
 
 import json
+import shlex
+import shutil
+from pathlib import Path
 
 import typer
 
@@ -42,17 +45,55 @@ maintenance_app = typer.Typer(
 )
 app.add_typer(maintenance_app, name="maintenance")
 
-_CRON_LINES = [
-    "# LLM Wiki maintenance jobs",
+_CRON_HEADER = "# LLM Wiki maintenance jobs"
+
+# Default PATH segments merged with the dir of the active `kb` binary.
+# Covers common install locations (Homebrew Intel/ARM, /usr/local, system).
+_DEFAULT_PATH_DIRS = [
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/usr/bin",
+    "/bin",
+]
+
+_CRON_JOB_TEMPLATES = [
     "0 2 * * * cd {root} && kb index --incremental 2>&1 | logger -t kb-index",
-    "0 3 * * 0 cd {root} && kb lint --json > {root}/output/reports/lint-weekly.json 2>&1",
+    "0 3 * * 0 cd {root} && kb lint --json > {lint_out} 2>&1",
     "0 4 * * 0 cd {root} && kb charts --all 2>&1 | logger -t kb-charts",
 ]
 
 
+def _build_cron_path() -> str:
+    """Build a PATH value for cron that includes the active `kb` binary's dir.
+
+    cron runs with a minimal PATH (usually /usr/bin:/bin), so user-installed
+    tools like `kb` at ~/.local/bin/ are invisible. We detect the active
+    install location and prepend it to a list of common bin dirs.
+    """
+    dirs: list[str] = []
+    kb_path = shutil.which("kb")
+    if kb_path:
+        kb_dir = str(Path(kb_path).parent)
+        dirs.append(kb_dir)
+    for d in _DEFAULT_PATH_DIRS:
+        if d not in dirs:
+            dirs.append(d)
+    return ":".join(dirs)
+
+
 def _get_cron_block(root: str) -> str:
-    """Build the cron block for the given project root."""
-    return "\n".join(line.format(root=root) for line in _CRON_LINES)
+    """Build the cron block for the given project root.
+
+    Shell-quotes the root path (handles spaces and special chars) and
+    prepends a PATH= line so cron can find the `kb` binary.
+    """
+    quoted_root = shlex.quote(root)
+    lint_out = shlex.quote(f"{root}/output/reports/lint-weekly.json")
+    path_line = f"PATH={_build_cron_path()}"
+    lines = [_CRON_HEADER, path_line]
+    for tmpl in _CRON_JOB_TEMPLATES:
+        lines.append(tmpl.format(root=quoted_root, lint_out=lint_out))
+    return "\n".join(lines)
 
 
 def _read_crontab() -> str:
@@ -83,18 +124,29 @@ def _write_crontab(content: str) -> None:
 
 
 def _remove_kb_block(crontab_text: str) -> str:
-    """Remove the LLM Wiki maintenance block from crontab text."""
+    """Remove the LLM Wiki maintenance block from crontab text.
+
+    The block starts with the header comment and continues until a line
+    outside the block's expected shapes (PATH=, schedule entries, or
+    blank separator). This is resilient to both the legacy format
+    (no PATH= line) and the current format.
+    """
     lines = crontab_text.splitlines()
     result = []
     skip = False
     for line in lines:
-        if line.strip() == "# LLM Wiki maintenance jobs":
+        stripped = line.strip()
+        if stripped == _CRON_HEADER:
             skip = True
             continue
-        if skip and line.strip() == "":
+        if skip and stripped == "":
             skip = False
             continue
-        if skip and (line.strip().startswith("0 ") or line.strip().startswith("*")):
+        if skip and (
+            stripped.startswith("0 ")
+            or stripped.startswith("*")
+            or stripped.startswith("PATH=")
+        ):
             continue
         skip = False
         result.append(line)
