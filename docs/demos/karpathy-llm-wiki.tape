@@ -1,3 +1,7 @@
+# Render from the repo root:
+#   vhs docs/demos/karpathy-llm-wiki.tape
+# (The tape resolves $CORE relative to $PWD, so CWD must be the repo root.)
+
 Output docs/demos/karpathy-llm-wiki.gif
 
 Set Shell zsh
