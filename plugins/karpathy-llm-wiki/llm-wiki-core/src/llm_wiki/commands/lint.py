@@ -15,7 +15,12 @@ from pathlib import Path
 import typer
 
 from llm_wiki.core.config import load_config, WikiConfig
-from llm_wiki.core.frontmatter import REQUIRED_FIELDS, VALID_VALUES, parse_file
+from llm_wiki.core.frontmatter import (
+    REQUIRED_FIELDS,
+    VALID_VALUES,
+    get_knowledge_type,
+    parse_file,
+)
 from llm_wiki.core.taxonomy import load_approved_tags
 
 
@@ -51,7 +56,7 @@ def _scan_frontmatter(wiki_dir: Path) -> list[dict]:
         }
 
         if not fm:
-            entry["fields_missing"] = REQUIRED_FIELDS[:]
+            entry["fields_missing"] = REQUIRED_FIELDS[:] + ["knowledge_type"]
             results.append(entry)
             continue
 
@@ -60,6 +65,14 @@ def _scan_frontmatter(wiki_dir: Path) -> list[dict]:
                 entry["fields_present"].append(field)
             else:
                 entry["fields_missing"].append(field)
+
+        # Either-or rule: knowledge_type may live in the `knowledge_type` key
+        # (canonical schema) or as the value of the `type` key (simplified
+        # schema). If resolvable under either name, treat as present.
+        if get_knowledge_type(fm) is not None:
+            entry["fields_present"].append("knowledge_type")
+        else:
+            entry["fields_missing"].append("knowledge_type")
 
         if isinstance(fm.get("tags"), list):
             entry["tags"] = [str(t) for t in fm["tags"]]

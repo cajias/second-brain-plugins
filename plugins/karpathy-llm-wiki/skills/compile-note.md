@@ -59,6 +59,10 @@ Only add wikilinks that are genuinely meaningful -- forced connections are noise
 
 ## Writing the Note
 
+**Always use `kb compile --write-note` to create notes.** Do NOT use the Write/Edit tools to create note files directly.
+
+Why: the CLI emits the canonical 9-field frontmatter schema (`id`, `type`, `knowledge_type`, `status`, `confidence`, `scope`, `tags`, `source`, `created`) with deterministic field order, collision-safe filenames, and taxonomy validation. Writing files directly produces a simplified schema that diverges over time and requires post-hoc migration.
+
 ```bash
 kb compile --write-note \
   --title "Note Title Here" \
