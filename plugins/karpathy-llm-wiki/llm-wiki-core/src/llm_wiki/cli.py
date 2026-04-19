@@ -19,6 +19,7 @@ from llm_wiki.commands.search import search
 from llm_wiki.commands.lint import lint
 from llm_wiki.commands.index import index
 from llm_wiki.commands.charts import charts
+from llm_wiki.commands.migrate_frontmatter import migrate_frontmatter
 
 app = typer.Typer(
     name="kb",
@@ -35,6 +36,7 @@ app.command("search")(search)
 app.command("lint")(lint)
 app.command("index")(index)
 app.command("charts")(charts)
+app.command("migrate-frontmatter")(migrate_frontmatter)
 
 # -- Maintenance subcommand group ----------------------------------------------
 
