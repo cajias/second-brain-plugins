@@ -10,7 +10,7 @@ if [ -z "$file_path" ]; then
   exit 0
 fi
 
-cd "$CLAUDE_PROJECT_DIR"
+cd "${KARPATHY_WIKI_ROOT:-$CLAUDE_PROJECT_DIR}"
 
 if ! kb lint --file "$file_path"; then
   exit 2
