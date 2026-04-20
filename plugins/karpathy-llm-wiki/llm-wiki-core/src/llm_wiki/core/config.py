@@ -3,7 +3,8 @@
 Reads .kb-config.yml from the wiki root, validates required fields,
 and provides a typed Config dataclass to the rest of the system.
 
-The project root is detected by walking up from cwd looking for .kb-config.yml.
+The project root is resolved from an explicit path, the KARPATHY_WIKI_ROOT
+environment variable, or by walking up from cwd looking for .kb-config.yml.
 All other modules use get_project_root() and load_config() from here.
 """
 
@@ -78,13 +79,15 @@ def get_project_root(start: Optional[Path] = None) -> Path:
     """Find the wiki project root.
 
     Resolution order:
-      1. Explicit ``start`` argument
-      2. ``KARPATHY_WIKI_ROOT`` environment variable
-      3. Walk up from cwd looking for .kb-config.yml
+      1. If ``start`` is provided, walk up from ``start`` looking for
+         .kb-config.yml (env var is ignored).
+      2. If ``start`` is None and ``KARPATHY_WIKI_ROOT`` is set, use it
+         directly as the project root (must contain .kb-config.yml).
+      3. Otherwise, walk up from cwd looking for .kb-config.yml.
 
     Args:
-        start: Directory to start searching from. If provided, skips the
-               environment variable check.
+        start: Directory to begin the upward search from. If provided,
+               the environment variable is ignored.
 
     Returns:
         Path to the project root directory containing .kb-config.yml.
@@ -94,8 +97,17 @@ def get_project_root(start: Optional[Path] = None) -> Path:
     """
     if start is None:
         env_root = os.environ.get(ENV_ROOT)
-        if env_root:
+        if env_root is not None:
+            if not env_root.strip():
+                raise FileNotFoundError(
+                    f"{ENV_ROOT} is set but empty. "
+                    f"Unset it or provide a valid path containing {CONFIG_FILENAME}.",
+                )
             candidate = Path(env_root).resolve()
+            if not candidate.is_dir():
+                raise FileNotFoundError(
+                    f"{ENV_ROOT}={env_root} is not a directory (resolved to {candidate}).",
+                )
             if (candidate / CONFIG_FILENAME).exists():
                 return candidate
             raise FileNotFoundError(
