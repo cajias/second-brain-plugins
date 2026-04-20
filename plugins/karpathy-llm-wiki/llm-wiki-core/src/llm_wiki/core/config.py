@@ -9,6 +9,7 @@ All other modules use get_project_root() and load_config() from here.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,7 @@ import yaml
 
 
 CONFIG_FILENAME = ".kb-config.yml"
+ENV_ROOT = "KARPATHY_WIKI_ROOT"
 
 
 @dataclass
@@ -73,17 +75,33 @@ class WikiConfig:
 
 
 def get_project_root(start: Optional[Path] = None) -> Path:
-    """Walk up from start (default: cwd) looking for .kb-config.yml.
+    """Find the wiki project root.
+
+    Resolution order:
+      1. Explicit ``start`` argument
+      2. ``KARPATHY_WIKI_ROOT`` environment variable
+      3. Walk up from cwd looking for .kb-config.yml
 
     Args:
-        start: Directory to start searching from. Defaults to cwd.
+        start: Directory to start searching from. If provided, skips the
+               environment variable check.
 
     Returns:
         Path to the project root directory containing .kb-config.yml.
 
     Raises:
-        FileNotFoundError: If no .kb-config.yml is found within 20 parent levels.
+        FileNotFoundError: If no .kb-config.yml is found.
     """
+    if start is None:
+        env_root = os.environ.get(ENV_ROOT)
+        if env_root:
+            candidate = Path(env_root).resolve()
+            if (candidate / CONFIG_FILENAME).exists():
+                return candidate
+            raise FileNotFoundError(
+                f"{ENV_ROOT}={env_root} does not contain {CONFIG_FILENAME}.",
+            )
+
     current = Path(start) if start else Path.cwd()
     current = current.resolve()
 
@@ -92,12 +110,13 @@ def get_project_root(start: Optional[Path] = None) -> Path:
             return current
         parent = current.parent
         if parent == current:
-            break  # Reached filesystem root
+            break
         current = parent
 
     raise FileNotFoundError(
         f"Cannot find {CONFIG_FILENAME}. "
-        "Run 'kb init' to create a new knowledge base, or cd into a wiki directory."
+        f"Run 'kb init' to create a new knowledge base, set {ENV_ROOT}, "
+        "or cd into a wiki directory.",
     )
 
 
