@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import typer
 
-from llm_wiki.core.config import load_config, WikiConfig
+from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.frontmatter import REQUIRED_FIELDS, VALID_VALUES, parse_file
 from llm_wiki.core.taxonomy import load_approved_tags
 
@@ -238,11 +239,124 @@ def _run_all_checks(cfg: WikiConfig) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Single-file fast-path lint
+# ---------------------------------------------------------------------------
+
+
+MAX_TAGS = 6
+
+
+def _validate_frontmatter_strict(
+    filepath: Path,
+    root: Path,
+) -> list[str]:
+    """Return hard-error strings for a single permanent note's frontmatter."""
+    errors: list[str] = []
+
+    try:
+        fm, _ = parse_file(filepath)
+    except (OSError, ValueError):
+        return ["missing or unparseable YAML frontmatter"]
+
+    missing = [f for f in REQUIRED_FIELDS if f not in fm or fm[f] is None]
+    if missing:
+        errors.append(f"missing required fields: {', '.join(missing)}")
+
+    for field_name, allowed in VALID_VALUES.items():
+        val = fm.get(field_name)
+        if val is not None and str(val) not in allowed:
+            errors.append(
+                f"invalid {field_name}='{val}' "
+                f"(expected one of: {', '.join(allowed)})",
+            )
+
+    tags = fm.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t) for t in tags]
+
+    if len(tags) > MAX_TAGS:
+        errors.append(f"too many tags ({len(tags)} > {MAX_TAGS})")
+
+    approved = load_approved_tags(root / "wiki" / "_meta" / "tag-taxonomy.md")
+    if approved is not None:
+        rogue = [t for t in tags if t not in set(approved)]
+        if rogue:
+            errors.append(
+                f"rogue tags not in taxonomy: {', '.join(rogue)} "
+                f"(see wiki/_meta/tag-taxonomy.md)",
+            )
+
+    return errors
+
+
+def _check_graph_warnings(filepath: Path, root: Path) -> list[str]:
+    """Return soft-warning strings for link-graph issues on a single note."""
+    warnings: list[str] = []
+    wiki_dir = root / "wiki"
+    permanent_dir = wiki_dir / "permanent"
+
+    graph = _build_link_graph(wiki_dir)
+    existing = {f.stem for f in permanent_dir.glob("*.md")}
+    broken = [wl for wl in _extract_wikilinks(filepath) if wl["target"] not in existing]
+    if broken:
+        targets = ", ".join(f"[[{b['target']}]] (L{b['line']})" for b in broken)
+        warnings.append(f"broken wikilinks: {targets}")
+
+    node = graph["nodes"].get(filepath.stem)
+    if node is not None and not node["linked_from"]:
+        warnings.append(
+            "orphaned — no other note links here. "
+            "Add a [[wikilink]] from a related note.",
+        )
+
+    return warnings
+
+
+def lint_single_file(filepath: Path, root: Path) -> int:
+    """Fast-path per-file lint with tiered exit codes.
+
+    Hard errors (exit 2): missing/invalid frontmatter, rogue tags.
+    Soft warnings (exit 0, stderr): orphans, broken wikilinks.
+    Clean files exit 0 silently.
+    """
+    permanent_dir = (root / "wiki" / "permanent").resolve()
+    try:
+        filepath.resolve().relative_to(permanent_dir)
+    except ValueError:
+        return 0
+
+    if filepath.suffix != ".md":
+        return 0
+
+    rel = filepath.name
+    hard_errors = _validate_frontmatter_strict(filepath, root)
+
+    if hard_errors:
+        sys.stderr.write(f"kb-lint BLOCK {rel}:\n")
+        for err in hard_errors:
+            sys.stderr.write(f"  ✗ {err}\n")
+        return 2
+
+    soft_warnings = _check_graph_warnings(filepath, root)
+    if soft_warnings:
+        sys.stderr.write(f"kb-lint warn {rel}:\n")
+        for w in soft_warnings:
+            sys.stderr.write(f"  ⚠ {w}\n")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Typer command
 # ---------------------------------------------------------------------------
 
 
 def lint(
+    file: str = typer.Option(
+        None, "--file", "-f",
+        help="Lint a single file (fast-path). Exits 2 on hard errors, 0 on pass/soft warnings.",
+    ),
     json_output: bool = typer.Option(
         False, "--json", "-j", help="Output all checks as JSON.",
     ),
@@ -253,12 +367,17 @@ def lint(
     """Run health checks on the wiki.
 
     By default runs all checks. Use --json for machine-readable output.
+    Use --file for fast single-file lint with tiered exit codes.
     """
     try:
         cfg = load_config()
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
+
+    if file:
+        exit_code = lint_single_file(Path(file), cfg.project_root)
+        raise typer.Exit(code=exit_code)
 
     wiki_dir = cfg.project_root / "wiki"
     if not wiki_dir.exists():
