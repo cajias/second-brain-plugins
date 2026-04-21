@@ -69,6 +69,33 @@ def _html_to_text(html: str) -> str:
     return extractor.get_text()
 
 
+_marker_models: dict | None = None
+
+
+def _extract_pdf(pdf_path: Path) -> str:
+    """Extract markdown text from a PDF using Marker."""
+    global _marker_models  # noqa: PLW0603
+    try:
+        from marker.converters.pdf import PdfConverter  # noqa: PLC0415
+        from marker.models import create_model_dict  # noqa: PLC0415
+        from marker.output import text_from_rendered  # noqa: PLC0415
+    except ImportError as e:
+        raise RuntimeError(
+            "PDF extraction requires marker-pdf: pip install karpathy-llm-wiki[pdf]"
+        ) from e
+
+    try:
+        if _marker_models is None:
+            _marker_models = create_model_dict()
+        converter = PdfConverter(artifact_dict=_marker_models)
+        rendered = converter(str(pdf_path))
+        text, _, _ = text_from_rendered(rendered)
+    except Exception as e:
+        raise RuntimeError(f"Failed to extract text from {pdf_path.name}: {e}") from e
+
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Manifest helpers
 # ---------------------------------------------------------------------------
@@ -169,28 +196,50 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
 
     shutil.copy2(str(source_path), str(dest_path))
 
-    meta = {
+    is_pdf = source_path.suffix.lower() == ".pdf"
+    manifest_file = dest_path
+    pdf_extras_meta: dict = {}
+    pdf_extras_manifest: dict = {}
+
+    if is_pdf:
+        markdown_text = _extract_pdf(dest_path)
+        if not markdown_text.strip():
+            raise RuntimeError(
+                f"No text could be extracted from {source_path.name} — the PDF may be scanned/image-only"
+            )
+        md_path = dest_path.with_suffix(".md")
+        md_path.write_text(
+            f"# {source_path.stem}\n\n> Extracted from PDF: {source_path.name}\n\n{markdown_text.strip()}\n",
+            encoding="utf-8",
+        )
+        manifest_file = md_path
+        pdf_extras_meta = {"original_format": "pdf"}
+        pdf_extras_manifest = {"extracted_from": str(dest_path.relative_to(cfg.project_root))}
+
+    meta: dict = {
         "source": str(source_path),
         "date": _timestamp(),
         "type": "file",
         "original_path": str(source_path),
         "status": "pending",
+        **pdf_extras_meta,
     }
     _write_meta(dest_path, meta)
 
-    manifest_entry = {
+    manifest_entry: dict = {
         "id": f"ingest-{_short_id()}",
-        "file": str(dest_path.relative_to(cfg.project_root)),
+        "file": str(manifest_file.relative_to(cfg.project_root)),
         "type": "file",
         "source": str(source_path),
         "date": meta["date"],
         "status": "pending",
+        **pdf_extras_manifest,
     }
     _append_manifest(cfg, manifest_entry)
 
     return {
         "mode": "file",
-        "dest": str(dest_path),
+        "dest": str(manifest_file),
         "meta": meta,
         "manifest_id": manifest_entry["id"],
     }
