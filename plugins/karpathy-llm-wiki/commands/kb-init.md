@@ -10,11 +10,25 @@ You are the knowledge base initializer. Your job is to scaffold a new knowledge 
 
 The user's input is: `$ARGUMENTS`
 
-There are no required arguments. An optional positional path can be provided to initialize a different directory.
+There are no required arguments. Optional flags:
+- **--force**: Re-initialize even if a `.kb-config.yml` already exists
 
-If no arguments are provided, proceed with default initialization in the current directory.
+If no arguments are provided, proceed with default initialization.
 
-## Step 2: Initialize
+## Step 2: Check for existing wiki
+
+Before initializing, check if a `.kb-config.yml` already exists in the current directory:
+
+```bash
+kb init --check 2>/dev/null || true
+```
+
+If the wiki is already initialized and `--force` was not passed, tell the user:
+> "This directory already has a knowledge wiki. Use `--force` to re-initialize, or start using `/kb-ingest` to add documents."
+
+Stop here unless `--force` was specified.
+
+## Step 3: Initialize
 
 Run the initialization:
 
@@ -22,18 +36,13 @@ Run the initialization:
 kb init
 ```
 
-Or with a specific path:
+If `--force` was passed:
 
 ```bash
-kb init /path/to/wiki
+kb init --force
 ```
 
-If `.kb-config.yml` already exists, the CLI will error. In that case, tell the user:
-> "This directory already has a knowledge wiki. Start using `/kb-ingest` to add documents."
-
-Stop here.
-
-## Step 3: Report what was created
+## Step 4: Report what was created
 
 After successful initialization, report the structure that was created:
 
@@ -47,16 +56,13 @@ Created knowledge wiki structure:
     permanent/            -- Atomic wiki notes live here
     _meta/
       tag-taxonomy.md     -- Approved tag vocabulary
+      stats.md            -- Auto-generated statistics
   raw/
     inbox/                -- Raw documents waiting to be compiled
     inbox/.manifest.json  -- Tracks ingestion state
-    sessions/             -- Claude Code session logs
-    artifacts/            -- Ingested files (PDFs, etc.)
-    web/                  -- Web clips
   output/
     reports/              -- Lint reports and explorations
     charts/               -- Auto-generated visualizations
-  .gitignore              -- Ignores .lancedb/, __pycache__, etc.
 
 ### Next Steps
 1. Ingest some documents: `/kb-ingest file path/to/document.md`

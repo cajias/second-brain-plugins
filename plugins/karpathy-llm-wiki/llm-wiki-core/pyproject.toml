@@ -13,6 +13,9 @@ dependencies = [
     "typer[all]>=0.12",
 ]
 
+[project.optional-dependencies]
+pdf = ["marker-pdf>=1.0"]
+
 [project.scripts]
 kb = "llm_wiki.cli:app"
 
@@ -75,7 +78,7 @@ indent-style = "space"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["lancedb.*", "sentence_transformers.*", "matplotlib.*", "pyarrow.*", "pandas.*"]
+module = ["lancedb.*", "sentence_transformers.*", "matplotlib.*", "pyarrow.*", "pandas.*", "marker.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

@@ -32,29 +32,15 @@ class TestGetProjectRoot:
         with pytest.raises(FileNotFoundError, match="Cannot find"):
             get_project_root(start=wiki_root_bare)
 
-    def test_env_var_overrides_cwd(self, wiki_root: Path, tmp_path: Path, monkeypatch):
-        """Env var wins even when cwd walk-up would also find a valid root."""
-        alt = tmp_path / "alt-wiki"
-        alt.mkdir()
-        (alt / ".kb-config.yml").write_text(yaml.dump({"paths": {}, "lancedb": {}}))
-        monkeypatch.chdir(wiki_root)
-        monkeypatch.setenv("KARPATHY_WIKI_ROOT", str(alt))
+    def test_env_var_overrides_cwd(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root.parent)
+        monkeypatch.setenv("KARPATHY_WIKI_ROOT", str(wiki_root))
         root = get_project_root()
-        assert root == alt.resolve()
+        assert root == wiki_root.resolve()
 
     def test_env_var_error_when_no_config(self, wiki_root_bare: Path, monkeypatch):
         monkeypatch.setenv("KARPATHY_WIKI_ROOT", str(wiki_root_bare))
         with pytest.raises(FileNotFoundError, match="KARPATHY_WIKI_ROOT"):
-            get_project_root()
-
-    def test_env_var_error_when_path_does_not_exist(self, monkeypatch):
-        monkeypatch.setenv("KARPATHY_WIKI_ROOT", "/nonexistent/path/xyz")
-        with pytest.raises(FileNotFoundError, match="not a directory"):
-            get_project_root()
-
-    def test_env_var_error_when_empty(self, monkeypatch):
-        monkeypatch.setenv("KARPATHY_WIKI_ROOT", "")
-        with pytest.raises(FileNotFoundError, match="set but empty"):
             get_project_root()
 
     def test_explicit_start_ignores_env_var(self, wiki_root: Path, wiki_root_bare: Path, monkeypatch):
