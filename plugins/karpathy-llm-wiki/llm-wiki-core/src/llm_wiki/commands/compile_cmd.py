@@ -285,6 +285,14 @@ def compile_notes(
         False, "--list-inbox",
         help="List pending items in the inbox manifest.",
     ),
+    candidates_only: bool = typer.Option(
+        False, "--candidates-only",
+        help="With --list-inbox, show only entries tagged verdict=yes (the pass-1 keepers).",
+    ),
+    include_maybe: bool = typer.Option(
+        False, "--include-maybe",
+        help="With --candidates-only, also include verdict=maybe entries.",
+    ),
     mark_processed: Optional[str] = typer.Option(
         None, "--mark-processed",
         help="Mark a manifest entry as processed.",
@@ -433,14 +441,31 @@ def compile_notes(
 
     elif list_inbox:
         entries = _list_inbox(cfg)
+
+        if candidates_only:
+            allowed = {"yes"} | ({"maybe"} if include_maybe else set())
+            entries = [
+                e for e in entries
+                if isinstance(e.get("candidate"), dict)
+                and e["candidate"].get("verdict") in allowed
+            ]
+
         if json_output:
             typer.echo(json.dumps(entries, indent=2))
         else:
             if not entries:
-                typer.echo("Inbox is empty. No pending items.")
+                if candidates_only:
+                    typer.echo("No candidate entries found. Run pass-1 tagging first.")
+                else:
+                    typer.echo("Inbox is empty. No pending items.")
             else:
                 pending = [e for e in entries if e.get("status") == "pending"]
-                typer.echo(f"Inbox: {len(entries)} total, {len(pending)} pending\n")
+                header = (
+                    f"Inbox: {len(entries)} candidate(s) shown"
+                    if candidates_only
+                    else f"Inbox: {len(entries)} total, {len(pending)} pending"
+                )
+                typer.echo(f"{header}\n")
                 for entry in entries:
                     status_marker = "[x]" if entry.get("status") == "processed" else "[ ]"
                     typer.echo(f"  {status_marker} {entry.get('id', 'no-id')}")
@@ -450,6 +475,12 @@ def compile_notes(
                     typer.echo(f"      status: {entry.get('status', 'unknown')}")
                     if entry.get("file"):
                         typer.echo(f"      file:   {entry['file']}")
+                    cand = entry.get("candidate")
+                    if isinstance(cand, dict):
+                        typer.echo(
+                            f"      candidate: verdict={cand.get('verdict')} "
+                            f"score={cand.get('score')} reason={cand.get('reason')}"
+                        )
                     typer.echo("")
 
     elif mark_processed:

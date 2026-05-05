@@ -359,3 +359,66 @@ class TestTagCandidate:
         )
         assert loaded[0]["candidate"]["verdict"] == "yes"
         assert loaded[0]["candidate"]["suggested_tags"] == ["agent-patterns", "llm"]
+
+
+# ---------------------------------------------------------------------------
+# List inbox -- candidates-only filter
+# ---------------------------------------------------------------------------
+
+
+class TestListInboxCandidatesOnly:
+    def test_filters_to_yes_candidates_by_default(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "_meta").mkdir(parents=True)
+        (wiki_root / "permanent").mkdir(parents=True)
+        (tmp_path / "raw" / "inbox").mkdir(parents=True)
+        (tmp_path / ".kb-config.yml").write_text(
+            "vault_root: .\n"
+        )
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
+            {"id": "ingest-yes", "status": "pending",
+             "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"}},
+            {"id": "ingest-no", "status": "pending",
+             "candidate": {"verdict": "no", "score": 0.05, "reason": "noise"}},
+            {"id": "ingest-maybe", "status": "pending",
+             "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"}},
+            {"id": "ingest-untagged", "status": "pending"},
+        ]))
+
+        monkeypatch.chdir(tmp_path)
+        from llm_wiki.cli import app
+        runner = CliRunner()
+
+        result = runner.invoke(app, ["compile", "--list-inbox", "--candidates-only", "--json"])
+
+        assert result.exit_code == 0, result.output
+        entries = json.loads(result.stdout)
+        ids = [e["id"] for e in entries]
+        assert ids == ["ingest-yes"]
+
+    def test_include_maybe_with_flag(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "_meta").mkdir(parents=True)
+        (wiki_root / "permanent").mkdir(parents=True)
+        (tmp_path / "raw" / "inbox").mkdir(parents=True)
+        (tmp_path / ".kb-config.yml").write_text(
+            "vault_root: .\n"
+        )
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
+            {"id": "ingest-yes", "status": "pending",
+             "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"}},
+            {"id": "ingest-maybe", "status": "pending",
+             "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"}},
+        ]))
+
+        monkeypatch.chdir(tmp_path)
+        from llm_wiki.cli import app
+        runner = CliRunner()
+
+        result = runner.invoke(app, [
+            "compile", "--list-inbox", "--candidates-only", "--include-maybe", "--json",
+        ])
+
+        assert result.exit_code == 0, result.output
+        ids = [e["id"] for e in json.loads(result.stdout)]
+        assert sorted(ids) == ["ingest-maybe", "ingest-yes"]
