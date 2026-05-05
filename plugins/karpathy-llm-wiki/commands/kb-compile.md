@@ -144,6 +144,14 @@ Or pass `-` to read the JSON from stdin instead of a file (skips the temp file):
 cat /tmp/dedup-batch.json | kb compile --check-dedup-batch - --json
 ```
 
+> **Source-aware thresholds**: each manifest entry carries a `source_class` (default `chat` if absent). Denser sources tolerate more overlap before being flagged a duplicate. When you dedup a single idea with `kb compile --check-dedup`, pass the entry's class through so the threshold matches the source's expected density:
+>
+> ```bash
+> kb compile --check-dedup "Title or key phrase" --source-class book --json
+> ```
+>
+> Thresholds by class: `chat` 0.92 (default), `doc` 0.93, `book` 0.94, `paper` 0.94. The JSON output includes the `threshold` actually applied.
+
 The output is a JSON array `[{"key", "status", "top_score", "matches"}]`. Map each result back to its idea via `key` and branch by `status`:
 
 - **`status: "unique"` (score < 0.80)**: Proceed to write the note
