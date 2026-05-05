@@ -289,6 +289,31 @@ def compile_notes(
         None, "--mark-processed",
         help="Mark a manifest entry as processed.",
     ),
+    # Tag-candidate fields (used with --tag-candidate)
+    tag_candidate: Optional[str] = typer.Option(
+        None, "--tag-candidate",
+        help="Record a pre-filter verdict on a manifest entry (pass 1 of two-pass compile).",
+    ),
+    verdict: Optional[str] = typer.Option(
+        None, "--verdict",
+        help="Verdict for --tag-candidate: yes, no, or maybe.",
+    ),
+    score: Optional[float] = typer.Option(
+        None, "--score",
+        help="Confidence score 0.0-1.0 for --tag-candidate.",
+    ),
+    reason: Optional[str] = typer.Option(
+        None, "--reason",
+        help="Short justification for --tag-candidate verdict.",
+    ),
+    suggested_type: Optional[str] = typer.Option(
+        None, "--suggested-type",
+        help="Hint for second-pass extractor: knowledge_type to consider.",
+    ),
+    suggested_tags: Optional[str] = typer.Option(
+        None, "--suggested-tags",
+        help="Comma-separated tag hints for second-pass extractor.",
+    ),
     # Note fields (used with --write-note)
     title: Optional[str] = typer.Option(None, "--title", help="Note title."),
     knowledge_type: Optional[str] = typer.Option(
@@ -438,9 +463,52 @@ def compile_notes(
                 typer.echo(f"Error: {result['error']}", err=True)
                 raise typer.Exit(code=1)
 
+    elif tag_candidate:
+        if not verdict:
+            typer.echo("Error: --tag-candidate requires --verdict", err=True)
+            raise typer.Exit(code=1)
+        if score is None:
+            typer.echo("Error: --tag-candidate requires --score", err=True)
+            raise typer.Exit(code=1)
+        if not reason:
+            typer.echo("Error: --tag-candidate requires --reason", err=True)
+            raise typer.Exit(code=1)
+
+        tag_list = (
+            [t.strip() for t in suggested_tags.split(",") if t.strip()]
+            if suggested_tags else []
+        )
+        result = _tag_candidate(
+            entry_id=tag_candidate,
+            verdict=verdict,
+            score=score,
+            reason=reason,
+            suggested_type=suggested_type,
+            suggested_tags=tag_list,
+            cfg=cfg,
+        )
+
+        if json_output:
+            typer.echo(json.dumps(result, indent=2))
+        else:
+            if result["success"]:
+                cand = result["candidate"]
+                typer.echo(
+                    f"Tagged '{tag_candidate}' as candidate "
+                    f"(verdict={cand['verdict']}, score={cand['score']:.2f})"
+                )
+                typer.echo(f"  reason: {cand['reason']}")
+                if cand.get("suggested_type"):
+                    typer.echo(f"  suggested_type: {cand['suggested_type']}")
+                if cand.get("suggested_tags"):
+                    typer.echo(f"  suggested_tags: {cand['suggested_tags']}")
+            else:
+                typer.echo(f"Error: {result['error']}", err=True)
+                raise typer.Exit(code=1)
+
     else:
         typer.echo(
-            "Error: Specify one of --check-dedup, --write-note, --list-inbox, or --mark-processed",
+            "Error: Specify one of --check-dedup, --write-note, --list-inbox, --mark-processed, or --tag-candidate",
             err=True,
         )
         raise typer.Exit(code=1)

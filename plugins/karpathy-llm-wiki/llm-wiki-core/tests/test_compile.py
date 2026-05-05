@@ -322,3 +322,40 @@ class TestTagCandidate:
 
         assert result["success"] is False
         assert "verdict" in result["error"].lower()
+
+    def test_cli_tag_candidate_flag(self, tmp_path, monkeypatch):
+        # Set up minimal wiki + manifest
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "_meta").mkdir(parents=True)
+        (wiki_root / "permanent").mkdir(parents=True)
+        (tmp_path / "raw" / "inbox").mkdir(parents=True)
+        (tmp_path / ".kb-config.yml").write_text(
+            "vault_root: .\n"
+        )
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
+            {"id": "ingest-abc", "source": "url", "type": "web",
+             "file": "raw/web/x.md", "status": "pending"}
+        ]))
+
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, [
+            "compile",
+            "--tag-candidate", "ingest-abc",
+            "--verdict", "yes",
+            "--score", "0.85",
+            "--reason", "good pattern",
+            "--suggested-type", "pattern",
+            "--suggested-tags", "agent-patterns,llm",
+            "--json",
+        ])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["success"] is True
+
+        loaded = json.loads(
+            (tmp_path / "raw" / "inbox" / ".manifest.json").read_text()
+        )
+        assert loaded[0]["candidate"]["verdict"] == "yes"
+        assert loaded[0]["candidate"]["suggested_tags"] == ["agent-patterns", "llm"]
