@@ -12,6 +12,37 @@ from typing import Any
 from llm_wiki.core.embeddings import search_index
 
 
+SOURCE_CLASS_THRESHOLDS: dict[str, float] = {
+    "chat": 0.92,
+    "doc": 0.93,
+    "book": 0.94,
+    "paper": 0.94,
+}
+
+
+def resolve_threshold(source_class: str | None) -> float:
+    """Map a source class label to its cosine-similarity duplicate threshold.
+
+    Args:
+        source_class: One of {"chat", "doc", "book", "paper"}, or None/"" for chat default.
+
+    Returns:
+        Cosine threshold above which a candidate is considered a duplicate.
+
+    Raises:
+        ValueError: If source_class is given but not one of the known labels.
+    """
+    if not source_class:
+        return SOURCE_CLASS_THRESHOLDS["chat"]
+    key = source_class.lower()
+    if key not in SOURCE_CLASS_THRESHOLDS:
+        raise ValueError(
+            f"unknown source_class {source_class!r}; "
+            f"expected one of {sorted(SOURCE_CLASS_THRESHOLDS)}"
+        )
+    return SOURCE_CLASS_THRESHOLDS[key]
+
+
 def check_duplicate(
     query: str,
     db_path: Path,
