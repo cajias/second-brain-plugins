@@ -27,7 +27,7 @@ import typer
 
 from llm_wiki.commands.charts import _generate_all_charts
 from llm_wiki.core.config import WikiConfig, load_config
-from llm_wiki.core.dedup import check_duplicate, check_duplicates_batch
+from llm_wiki.core.dedup import check_duplicate, check_duplicates_batch, resolve_threshold
 from llm_wiki.core.taxonomy import load_taxonomy_safe
 
 
@@ -72,9 +72,11 @@ def _generate_id() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _check_dedup(query: str, cfg: WikiConfig) -> dict[str, Any]:
+def _check_dedup(query: str, cfg: WikiConfig, threshold: float) -> dict[str, Any]:
     """Check for duplicate/similar content in the LanceDB index."""
-    return check_duplicate(query, cfg.db_path, cfg.table_name)
+    result = check_duplicate(query, cfg.db_path, cfg.table_name, threshold=threshold)
+    result["threshold"] = threshold
+    return result
 
 
 def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signature
@@ -341,14 +343,16 @@ def _print_dedup_result(result: dict[str, Any]) -> None:
     """Render a dedup-check result as text."""
     status = result["status"]
     top = result["top_score"]
+    threshold = result.get("threshold", 0.92)
     status_labels = {
-        "duplicate": "DUPLICATE (>=0.92)",
-        "similar": "SIMILAR (0.80-0.91) -- review recommended",
+        "duplicate": f"DUPLICATE (>={threshold:.2f})",
+        "similar": "SIMILAR (0.80-threshold) -- review recommended",
         "unique": "UNIQUE (<0.80)",
         "error": "ERROR",
     }
     typer.echo(f"Dedup check: {status_labels.get(status, status)}")
     typer.echo(f"Top similarity score: {top:.4f}")
+    typer.echo(f"Threshold used: {threshold:.4f}")
     if result.get("message"):
         typer.echo(f"Note: {result['message']}")
     if result["matches"]:
@@ -358,8 +362,8 @@ def _print_dedup_result(result: dict[str, Any]) -> None:
             typer.echo(f"    {m['file_path']}")
 
 
-def _handle_check_dedup(query: str, cfg: WikiConfig, json_output: bool) -> None:
-    result = _check_dedup(query, cfg)
+def _handle_check_dedup(query: str, cfg: WikiConfig, threshold: float, json_output: bool) -> None:
+    result = _check_dedup(query, cfg, threshold)
     if json_output:
         typer.echo(json.dumps(result, indent=2))
     else:
@@ -722,6 +726,11 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
     source: str | None = typer.Option(None, "--source", help="Origin description."),
     body: str | None = typer.Option(None, "--body", help="Note body content."),
     # Modifiers
+    source_class: str | None = typer.Option(
+        None,
+        "--source-class",
+        help="Source class for dedup tuning: chat (default, 0.92), doc (0.93), book (0.94), paper (0.94).",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -748,7 +757,12 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
         raise typer.Exit(code=1) from e
 
     if check_dedup:
-        _handle_check_dedup(check_dedup, cfg, json_output)
+        try:
+            threshold = resolve_threshold(source_class)
+        except ValueError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(code=1) from e
+        _handle_check_dedup(check_dedup, cfg, threshold, json_output)
     elif check_dedup_batch:
         _handle_check_dedup_batch(check_dedup_batch, cfg, json_output)
     elif write_note:
