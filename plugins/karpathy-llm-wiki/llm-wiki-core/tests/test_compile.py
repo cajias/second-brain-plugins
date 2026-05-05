@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
+from llm_wiki.commands.compile_cmd import _tag_candidate
 
 runner = CliRunner()
 
@@ -217,3 +218,107 @@ class TestListInbox:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["compile"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Tag candidate
+# ---------------------------------------------------------------------------
+
+
+def _make_cfg(tmp_path: Path):
+    """Build a minimal WikiConfig pointing into tmp_path."""
+    from llm_wiki.core.config import WikiConfig
+
+    return WikiConfig(
+        project_root=tmp_path,
+        vault_root=tmp_path / "vault",
+        raw_inbox=tmp_path / "raw" / "inbox",
+        raw_sessions=tmp_path / "raw" / "sessions",
+        raw_artifacts=tmp_path / "raw" / "artifacts",
+        raw_web=tmp_path / "raw" / "web",
+        wiki_permanent=tmp_path / "wiki" / "permanent",
+        wiki_index=tmp_path / "wiki" / "_index",
+        wiki_meta=tmp_path / "wiki" / "_meta",
+        output=tmp_path / "output",
+        fleeting=tmp_path / "fleeting",
+        db_path=tmp_path / ".lancedb",
+        table_name="notes",
+        compile_batch_size=10,
+        auto_link_threshold=0.75,
+        lint_orphan_threshold=0,
+        lint_tag_compliance="strict",
+        lint_index_staleness_hours=24,
+        lint_index_min_coverage_pct=80,
+        query_default_limit=10,
+    )
+
+
+class TestTagCandidate:
+    def test_tags_existing_entry_with_candidate_metadata(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([
+            {"id": "ingest-abc", "source": "url", "type": "web",
+             "file": "raw/web/x.md", "status": "pending"}
+        ]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=0.85,
+            reason="concrete pattern with measurable result",
+            suggested_type="pattern",
+            suggested_tags=["agent-patterns", "llm"],
+            cfg=cfg,
+        )
+
+        assert result["success"] is True
+        loaded = json.loads(manifest.read_text())
+        entry = loaded[0]
+        assert entry["candidate"]["verdict"] == "yes"
+        assert entry["candidate"]["score"] == 0.85
+        assert entry["candidate"]["reason"] == "concrete pattern with measurable result"
+        assert entry["candidate"]["suggested_type"] == "pattern"
+        assert entry["candidate"]["suggested_tags"] == ["agent-patterns", "llm"]
+        assert "tagged_at" in entry["candidate"]
+
+    def test_rejects_unknown_entry_id(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([
+            {"id": "ingest-abc", "status": "pending"}
+        ]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-missing",
+            verdict="no",
+            score=0.1,
+            reason="not found",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+
+    def test_rejects_invalid_verdict(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="probably",  # not yes/no/maybe
+            score=0.5,
+            reason="ambiguous",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "verdict" in result["error"].lower()

@@ -203,6 +203,70 @@ def _mark_processed(entry_id: str, cfg: WikiConfig) -> dict:
     return {"success": True, "entry_id": entry_id, "new_status": "processed"}
 
 
+_VALID_VERDICTS = {"yes", "no", "maybe"}
+
+
+def _tag_candidate(
+    entry_id: str,
+    verdict: str,
+    score: float,
+    reason: str,
+    suggested_type: Optional[str],
+    suggested_tags: list[str],
+    cfg: WikiConfig,
+) -> dict:
+    """Record a pre-filter verdict on a manifest entry.
+
+    The verdict is one of "yes", "no", or "maybe". The kb-compile skill
+    calls this during the lightweight first pass; the second extraction
+    pass reads it back via --list-inbox --candidates-only.
+    """
+    if verdict not in _VALID_VERDICTS:
+        return {
+            "success": False,
+            "error": f"Invalid verdict '{verdict}'. Must be one of: {sorted(_VALID_VERDICTS)}",
+        }
+
+    manifest_path = cfg.raw_inbox / ".manifest.json"
+    if not manifest_path.exists():
+        return {"success": False, "error": "Manifest file not found."}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, IOError) as e:
+        return {"success": False, "error": f"Could not read manifest: {e}"}
+
+    if isinstance(manifest, list):
+        entries = manifest
+    elif isinstance(manifest, dict) and "entries" in manifest:
+        entries = manifest["entries"]
+    else:
+        return {"success": False, "error": "Unexpected manifest format."}
+
+    found = False
+    for entry in entries:
+        if entry.get("id") == entry_id:
+            entry["candidate"] = {
+                "verdict": verdict,
+                "score": score,
+                "reason": reason,
+                "suggested_type": suggested_type,
+                "suggested_tags": list(suggested_tags),
+                "tagged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            found = True
+            break
+
+    if not found:
+        return {"success": False, "error": f"Entry '{entry_id}' not found in manifest."}
+
+    try:
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except IOError as e:
+        return {"success": False, "error": f"Could not write manifest: {e}"}
+
+    return {"success": True, "entry_id": entry_id, "candidate": entry["candidate"]}
+
+
 # ---------------------------------------------------------------------------
 # Typer command
 # ---------------------------------------------------------------------------
