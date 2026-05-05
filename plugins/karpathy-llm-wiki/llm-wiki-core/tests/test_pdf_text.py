@@ -71,3 +71,9 @@ class TestExtractPdfText:
         raw = extract_pdf_text(sample_pdf_path)
         clean = normalize_pdf_text(raw)
         assert "hello world" in clean.lower()
+
+    def test_corrupt_pdf_returns_empty_string(self, tmp_path):
+        """A non-PDF byte sequence should return empty string, not crash."""
+        bad = tmp_path / "bad.pdf"
+        bad.write_bytes(b"this is not a pdf")
+        assert extract_pdf_text(bad) == ""
