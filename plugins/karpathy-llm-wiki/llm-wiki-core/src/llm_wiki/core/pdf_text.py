@@ -14,7 +14,7 @@ from pathlib import Path
 import pypdf
 
 
-_INTER_CHAR_RUN = re.compile(r"(?:\b\w\s){2,}\w\b")
+_INTER_CHAR_RUN = re.compile(r"(?:\b[a-z]\s){3,}[a-z]\b")
 _PAGE_MARKER = re.compile(r"--- PAGE \d+ ---", re.IGNORECASE)
 _ZERO_WIDTH = re.compile(r"[\u200b\u200c\u200d\ufeff]")
 
@@ -36,6 +36,6 @@ def extract_pdf_text(path: Path) -> str:
     for page in reader.pages:
         try:
             parts.append(page.extract_text() or "")
-        except Exception:
+        except pypdf.errors.PyPdfError:
             parts.append("")
     return "\n\n".join(parts)

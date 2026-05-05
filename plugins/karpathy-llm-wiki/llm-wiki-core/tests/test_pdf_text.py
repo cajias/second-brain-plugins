@@ -36,6 +36,14 @@ class TestNormalizePdfText:
     def test_empty_input_is_empty_output(self):
         assert normalize_pdf_text("") == ""
 
+    def test_does_not_mangle_capitalized_acronyms(self):
+        # Real PDFs contain spaced acronyms in headings — must be preserved.
+        assert normalize_pdf_text("A B testing") == "A B testing"
+        assert normalize_pdf_text("I a b c") == "I a b c"
+
+    def test_does_not_mangle_normal_words(self):
+        assert normalize_pdf_text("a quick brown fox") == "a quick brown fox"
+
 
 class TestExtractPdfText:
     def test_returns_extracted_text(self, sample_pdf_path):
