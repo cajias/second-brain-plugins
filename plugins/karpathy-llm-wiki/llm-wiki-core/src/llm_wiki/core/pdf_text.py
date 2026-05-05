@@ -31,7 +31,10 @@ def normalize_pdf_text(text: str) -> str:
 
 def extract_pdf_text(path: Path) -> str:
     """Extract concatenated text from every page of a PDF, separated by blank lines."""
-    reader = pypdf.PdfReader(str(path))
+    try:
+        reader = pypdf.PdfReader(str(path))
+    except pypdf.errors.PyPdfError:
+        return ""
     parts: list[str] = []
     for page in reader.pages:
         try:
