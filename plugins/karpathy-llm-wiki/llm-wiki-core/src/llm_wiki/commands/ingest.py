@@ -112,7 +112,7 @@ def _write_meta(dest_path: Path, meta: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _ingest_session(source: str, cfg: WikiConfig) -> dict:
+def _ingest_session(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict:
     """Ingest a Claude Code session log (.jsonl)."""
     source_path = Path(source).resolve()
     if not source_path.exists():
@@ -143,6 +143,7 @@ def _ingest_session(source: str, cfg: WikiConfig) -> dict:
         "source": str(source_path),
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
     }
     _append_manifest(cfg, manifest_entry)
 
@@ -154,7 +155,7 @@ def _ingest_session(source: str, cfg: WikiConfig) -> dict:
     }
 
 
-def _ingest_file(source: str, cfg: WikiConfig) -> dict:
+def _ingest_file(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict:
     """Ingest a document (PDF, markdown, text, etc.)."""
     source_path = Path(source).resolve()
     if not source_path.exists():
@@ -185,6 +186,7 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
         "source": str(source_path),
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
     }
     _append_manifest(cfg, manifest_entry)
 
@@ -196,7 +198,7 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
     }
 
 
-def _ingest_url(source: str, cfg: WikiConfig) -> dict:
+def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict:
     """Ingest a web article by downloading and extracting text."""
     cfg.raw_web.mkdir(parents=True, exist_ok=True)
 
@@ -236,6 +238,7 @@ def _ingest_url(source: str, cfg: WikiConfig) -> dict:
         "source": source,
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
     }
     _append_manifest(cfg, manifest_entry)
 
@@ -247,7 +250,7 @@ def _ingest_url(source: str, cfg: WikiConfig) -> dict:
     }
 
 
-def _ingest_text(source: str, cfg: WikiConfig) -> dict:
+def _ingest_text(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict:
     """Ingest a quick text snippet as a timestamped markdown file."""
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
 
@@ -277,6 +280,7 @@ def _ingest_text(source: str, cfg: WikiConfig) -> dict:
         "source": "inline-text",
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
     }
     _append_manifest(cfg, manifest_entry)
 
@@ -313,6 +317,10 @@ def ingest(
     source: Optional[str] = typer.Option(
         None, "--source", "-s",
         help="Source path, URL, or text to ingest.",
+    ),
+    source_class: str = typer.Option(
+        "chat", "--source-class",
+        help="Source class for dedup tuning: chat, doc, book, or paper.",
     ),
     list_pending: bool = typer.Option(
         False, "--list", "-l",
@@ -366,6 +374,14 @@ def ingest(
         typer.echo("Error: --source is required for ingest", err=True)
         raise typer.Exit(code=1)
 
+    from llm_wiki.core.dedup import SOURCE_CLASS_THRESHOLDS
+    if source_class.lower() not in SOURCE_CLASS_THRESHOLDS:
+        typer.echo(
+            f"Error: --source-class must be one of {sorted(SOURCE_CLASS_THRESHOLDS)}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     dispatch = {
         "session": _ingest_session,
         "file": _ingest_file,
@@ -374,7 +390,7 @@ def ingest(
     }
 
     try:
-        result = dispatch[mode](source, cfg)
+        result = dispatch[mode](source, cfg, source_class.lower())
     except (FileNotFoundError, RuntimeError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
