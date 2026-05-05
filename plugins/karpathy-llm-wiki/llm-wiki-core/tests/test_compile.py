@@ -217,3 +217,60 @@ class TestListInbox:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["compile"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Source-class dedup tuning
+# ---------------------------------------------------------------------------
+
+
+class TestCheckDedupSourceClass:
+    """``kb compile --check-dedup --source-class book`` uses 0.94 threshold."""
+
+    def test_book_class_uses_book_threshold(
+        self, populated_wiki: Path, mock_embedding_model, monkeypatch
+    ):
+        monkeypatch.chdir(populated_wiki)
+        # Build the index so dedup has data
+        runner.invoke(app, ["index"])
+        result = runner.invoke(
+            app,
+            [
+                "compile", "--check-dedup",
+                "API Gateway Authentication Pattern with JWT validation",
+                "--source-class", "book",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        # The known-existing populated_wiki note should produce a high score.
+        # With source-class=book (0.94) it would NOT trip duplicate at 0.92,
+        # but the test asserts the threshold actually got applied to status.
+        assert "threshold" in data
+        assert data["threshold"] == 0.94
+
+    def test_unknown_source_class_errors(self, populated_wiki: Path, monkeypatch):
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(
+            app,
+            [
+                "compile", "--check-dedup", "anything",
+                "--source-class", "podcast",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "podcast" in result.output.lower() or "unknown" in result.output.lower()
+
+    def test_no_source_class_uses_chat_default(
+        self, populated_wiki: Path, mock_embedding_model, monkeypatch
+    ):
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index"])
+        result = runner.invoke(
+            app,
+            ["compile", "--check-dedup", "anything", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["threshold"] == 0.92
