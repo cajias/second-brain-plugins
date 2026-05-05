@@ -227,6 +227,21 @@ def _tag_candidate(
             "error": f"Invalid verdict '{verdict}'. Must be one of: {sorted(_VALID_VERDICTS)}",
         }
 
+    if not 0.0 <= score <= 1.0:
+        return {
+            "success": False,
+            "error": f"Invalid score {score}. Must be between 0.0 and 1.0 inclusive.",
+        }
+
+    warnings: list[str] = []
+    if suggested_type is not None:
+        taxonomy = load_taxonomy_safe(cfg.wiki_meta / "tag-taxonomy.md")
+        if taxonomy["knowledge_types"] and suggested_type not in taxonomy["knowledge_types"]:
+            warnings.append(
+                f"suggested_type '{suggested_type}' not in approved list: "
+                f"{sorted(taxonomy['knowledge_types'])}"
+            )
+
     manifest_path = cfg.raw_inbox / ".manifest.json"
     if not manifest_path.exists():
         return {"success": False, "error": "Manifest file not found."}
@@ -264,7 +279,10 @@ def _tag_candidate(
     except IOError as e:
         return {"success": False, "error": f"Could not write manifest: {e}"}
 
-    return {"success": True, "entry_id": entry_id, "candidate": entry["candidate"]}
+    result = {"success": True, "entry_id": entry_id, "candidate": entry["candidate"]}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 # ---------------------------------------------------------------------------

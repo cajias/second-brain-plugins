@@ -323,6 +323,80 @@ class TestTagCandidate:
         assert result["success"] is False
         assert "verdict" in result["error"].lower()
 
+    def test_rejects_score_above_one(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=1.5,
+            reason="hallucinated score",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "score" in result["error"].lower()
+        # Manifest must NOT have been mutated
+        loaded = json.loads(manifest.read_text())
+        assert "candidate" not in loaded[0]
+
+    def test_rejects_score_below_zero(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=-0.1,
+            reason="negative score",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "score" in result["error"].lower()
+
+    def test_warns_on_unknown_suggested_type(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        # Seed taxonomy file with the known knowledge_types
+        meta = tmp_path / "wiki" / "_meta"
+        meta.mkdir(parents=True)
+        (meta / "tag-taxonomy.md").write_text(
+            "# Taxonomy\n\n"
+            "## Knowledge Types\n\n"
+            "| Type | Use |\n|---|---|\n"
+            "| `fact` | x |\n| `pattern` | x |\n| `decision` | x |\n\n"
+            "## Approved Tags\n\n"
+            "| Tag | Use |\n|---|---|\n"
+            "| `llm` | x |\n| `agent-patterns` | x |\n"
+        )
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=0.8,
+            reason="bogus type",
+            suggested_type="not-a-real-type",
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        # The write succeeds (warnings are advisory) but the warning surfaces
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("not-a-real-type" in w for w in result["warnings"])
+
     def test_cli_tag_candidate_flag(self, tmp_path, monkeypatch):
         # Set up minimal wiki + manifest
         wiki_root = tmp_path / "wiki"
