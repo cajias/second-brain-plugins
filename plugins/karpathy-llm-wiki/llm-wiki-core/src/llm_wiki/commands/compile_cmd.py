@@ -55,9 +55,11 @@ def _generate_id() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _check_dedup(query: str, cfg: WikiConfig) -> dict:
+def _check_dedup(query: str, cfg: WikiConfig, threshold: float) -> dict:
     """Check for duplicate/similar content in the LanceDB index."""
-    return check_duplicate(query, cfg.db_path, cfg.table_name)
+    result = check_duplicate(query, cfg.db_path, cfg.table_name, threshold=threshold)
+    result["threshold"] = threshold
+    return result
 
 
 def _write_note(
@@ -237,6 +239,10 @@ def compile_notes(
     source: Optional[str] = typer.Option(None, "--source", help="Origin description."),
     body: Optional[str] = typer.Option(None, "--body", help="Note body content."),
     # Modifiers
+    source_class: Optional[str] = typer.Option(
+        None, "--source-class",
+        help="Source class for dedup tuning: chat (default, 0.92), doc (0.93), book (0.94), paper (0.94).",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", "-n",
         help="Preview what would be created without writing.",
@@ -260,20 +266,27 @@ def compile_notes(
 
     # Determine which mode we're in
     if check_dedup:
-        result = _check_dedup(check_dedup, cfg)
+        from llm_wiki.core.dedup import resolve_threshold
+        try:
+            threshold = resolve_threshold(source_class)
+        except ValueError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(code=1)
+        result = _check_dedup(check_dedup, cfg, threshold)
         if json_output:
             typer.echo(json.dumps(result, indent=2))
         else:
             status = result["status"]
             top = result["top_score"]
             status_labels = {
-                "duplicate": "DUPLICATE (>=0.92)",
-                "similar": "SIMILAR (0.80-0.91) -- review recommended",
+                "duplicate": f"DUPLICATE (>={threshold:.2f})",
+                "similar": "SIMILAR (0.80-threshold) -- review recommended",
                 "unique": "UNIQUE (<0.80)",
                 "error": "ERROR",
             }
             typer.echo(f"Dedup check: {status_labels.get(status, status)}")
             typer.echo(f"Top similarity score: {top:.4f}")
+            typer.echo(f"Threshold used: {threshold:.4f}")
             if result.get("message"):
                 typer.echo(f"Note: {result['message']}")
             if result["matches"]:
