@@ -35,6 +35,8 @@ kb ingest --mode MODE --source "SOURCE"
 Replace `MODE` with: session, file, url, or text.
 Replace `SOURCE` with the path, URL, or text content (properly shell-escaped).
 
+**Source-class hint** (optional, default `chat`): pass `--source-class book` for book chapters, `--source-class paper` for academic papers, `--source-class doc` for technical documentation, or omit for chat/conversation content. The class is persisted on the manifest entry and read by `/kb-compile` to select the right dedup threshold.
+
 For listing pending items:
 
 ```bash

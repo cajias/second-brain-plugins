@@ -35,6 +35,8 @@ If `--batch N` was specified, take only the first N pending items.
 
 For each pending item in the inbox:
 
+- For each pending item, read its `source_class` from the manifest entry (default `chat` if absent). Pass it through every `kb compile --check-dedup --source-class <class>` invocation so the threshold matches the source's expected density.
+
 1. **Read the raw file** (the `file` field from the manifest entry)
 2. **Extract atomic ideas** -- follow the `compile-note` skill's extraction guidelines
 3. **For each idea**:
