@@ -182,3 +182,55 @@ class TestIngestValidation:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["ingest", "--mode", "invalid-mode", "--source", "test"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# PDF ingest
+# ---------------------------------------------------------------------------
+
+
+class TestIngestPDF:
+    """``kb ingest --mode file <foo.pdf>`` writes a normalized .md, not the binary PDF."""
+
+    def test_pdf_produces_md_artifact(self, wiki_root: Path, sample_pdf_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(
+            app, ["ingest", "--mode", "file", "--source", str(sample_pdf_path), "--json"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        dest = Path(data["dest"])
+        assert dest.suffix == ".md", f"expected .md, got {dest.suffix}"
+        assert dest.exists()
+
+    def test_md_artifact_contains_normalized_text(self, wiki_root: Path, sample_pdf_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(
+            app, ["ingest", "--mode", "file", "--source", str(sample_pdf_path), "--json"]
+        )
+        data = json.loads(result.output)
+        body = Path(data["dest"]).read_text()
+        # The hand-crafted PDF body "h e l l o   w o r l d" must be normalized
+        assert "hello world" in body.lower()
+        # Inter-char bloat must NOT survive
+        assert "h e l l o" not in body
+
+    def test_manifest_entry_points_at_md(self, wiki_root: Path, sample_pdf_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(sample_pdf_path)])
+        manifest = _read_manifest(wiki_root)
+        assert len(manifest) == 1
+        assert manifest[0]["file"].endswith(".md")
+        assert manifest[0]["type"] == "file"
+
+    def test_non_pdf_file_unchanged(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        """Markdown files keep the existing copy-the-bytes behavior."""
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "doc.md", "# Heading\n\nbody")
+        result = runner.invoke(
+            app, ["ingest", "--mode", "file", "--source", str(src), "--json"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert Path(data["dest"]).suffix == ".md"
+        assert Path(data["dest"]).read_text() == "# Heading\n\nbody"

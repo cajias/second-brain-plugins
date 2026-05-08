@@ -155,7 +155,7 @@ def _ingest_session(source: str, cfg: WikiConfig) -> dict:
 
 
 def _ingest_file(source: str, cfg: WikiConfig) -> dict:
-    """Ingest a document (PDF, markdown, text, etc.)."""
+    """Ingest a document. PDFs are extracted to markdown; other types copied as-is."""
     source_path = Path(source).resolve()
     if not source_path.exists():
         raise FileNotFoundError(f"File not found: {source}")
@@ -164,10 +164,24 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     stem = _slugify(source_path.stem, max_len=40) or "document"
-    dest_name = f"{ts}-{stem}{source_path.suffix}"
-    dest_path = cfg.raw_artifacts / dest_name
 
-    shutil.copy2(str(source_path), str(dest_path))
+    if source_path.suffix.lower() == ".pdf":
+        from llm_wiki.core.pdf_text import extract_pdf_text, normalize_pdf_text
+
+        raw_text = extract_pdf_text(source_path)
+        clean_text = normalize_pdf_text(raw_text)
+        dest_name = f"{ts}-{stem}.md"
+        dest_path = cfg.raw_artifacts / dest_name
+        header = (
+            f"# {source_path.name}\n\n"
+            f"> Source: {source_path}\n"
+            f"> Extracted: {_timestamp()}\n\n---\n\n"
+        )
+        dest_path.write_text(header + clean_text + "\n", encoding="utf-8")
+    else:
+        dest_name = f"{ts}-{stem}{source_path.suffix}"
+        dest_path = cfg.raw_artifacts / dest_name
+        shutil.copy2(str(source_path), str(dest_path))
 
     meta = {
         "source": str(source_path),
