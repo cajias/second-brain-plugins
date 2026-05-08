@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
+from llm_wiki.commands.compile_cmd import _tag_candidate
 
 runner = CliRunner()
 
@@ -217,3 +218,281 @@ class TestListInbox:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["compile"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Tag candidate
+# ---------------------------------------------------------------------------
+
+
+def _make_cfg(tmp_path: Path):
+    """Build a minimal WikiConfig pointing into tmp_path."""
+    from llm_wiki.core.config import WikiConfig
+
+    return WikiConfig(
+        project_root=tmp_path,
+        vault_root=tmp_path / "vault",
+        raw_inbox=tmp_path / "raw" / "inbox",
+        raw_sessions=tmp_path / "raw" / "sessions",
+        raw_artifacts=tmp_path / "raw" / "artifacts",
+        raw_web=tmp_path / "raw" / "web",
+        wiki_permanent=tmp_path / "wiki" / "permanent",
+        wiki_index=tmp_path / "wiki" / "_index",
+        wiki_meta=tmp_path / "wiki" / "_meta",
+        output=tmp_path / "output",
+        fleeting=tmp_path / "fleeting",
+        db_path=tmp_path / ".lancedb",
+        table_name="notes",
+        compile_batch_size=10,
+        auto_link_threshold=0.75,
+        lint_orphan_threshold=0,
+        lint_tag_compliance="strict",
+        lint_index_staleness_hours=24,
+        lint_index_min_coverage_pct=80,
+        query_default_limit=10,
+    )
+
+
+class TestTagCandidate:
+    def test_tags_existing_entry_with_candidate_metadata(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([
+            {"id": "ingest-abc", "source": "url", "type": "web",
+             "file": "raw/web/x.md", "status": "pending"}
+        ]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=0.85,
+            reason="concrete pattern with measurable result",
+            suggested_type="pattern",
+            suggested_tags=["agent-patterns", "llm"],
+            cfg=cfg,
+        )
+
+        assert result["success"] is True
+        loaded = json.loads(manifest.read_text())
+        entry = loaded[0]
+        assert entry["candidate"]["verdict"] == "yes"
+        assert entry["candidate"]["score"] == 0.85
+        assert entry["candidate"]["reason"] == "concrete pattern with measurable result"
+        assert entry["candidate"]["suggested_type"] == "pattern"
+        assert entry["candidate"]["suggested_tags"] == ["agent-patterns", "llm"]
+        assert "tagged_at" in entry["candidate"]
+
+    def test_rejects_unknown_entry_id(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([
+            {"id": "ingest-abc", "status": "pending"}
+        ]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-missing",
+            verdict="no",
+            score=0.1,
+            reason="not found",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+
+    def test_rejects_invalid_verdict(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="probably",  # not yes/no/maybe
+            score=0.5,
+            reason="ambiguous",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "verdict" in result["error"].lower()
+
+    def test_rejects_score_above_one(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=1.5,
+            reason="hallucinated score",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "score" in result["error"].lower()
+        # Manifest must NOT have been mutated
+        loaded = json.loads(manifest.read_text())
+        assert "candidate" not in loaded[0]
+
+    def test_rejects_score_below_zero(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=-0.1,
+            reason="negative score",
+            suggested_type=None,
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        assert result["success"] is False
+        assert "score" in result["error"].lower()
+
+    def test_warns_on_unknown_suggested_type(self, tmp_path):
+        manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
+        # Seed taxonomy file with the known knowledge_types
+        meta = tmp_path / "wiki" / "_meta"
+        meta.mkdir(parents=True)
+        (meta / "tag-taxonomy.md").write_text(
+            "# Taxonomy\n\n"
+            "## Knowledge Types\n\n"
+            "| Type | Use |\n|---|---|\n"
+            "| `fact` | x |\n| `pattern` | x |\n| `decision` | x |\n\n"
+            "## Approved Tags\n\n"
+            "| Tag | Use |\n|---|---|\n"
+            "| `llm` | x |\n| `agent-patterns` | x |\n"
+        )
+        cfg = _make_cfg(tmp_path)
+
+        result = _tag_candidate(
+            entry_id="ingest-abc",
+            verdict="yes",
+            score=0.8,
+            reason="bogus type",
+            suggested_type="not-a-real-type",
+            suggested_tags=[],
+            cfg=cfg,
+        )
+
+        # The write succeeds (warnings are advisory) but the warning surfaces
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("not-a-real-type" in w for w in result["warnings"])
+
+    def test_cli_tag_candidate_flag(self, tmp_path, monkeypatch):
+        # Set up minimal wiki + manifest
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "_meta").mkdir(parents=True)
+        (wiki_root / "permanent").mkdir(parents=True)
+        (tmp_path / "raw" / "inbox").mkdir(parents=True)
+        (tmp_path / ".kb-config.yml").write_text(
+            "vault_root: .\n"
+        )
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
+            {"id": "ingest-abc", "source": "url", "type": "web",
+             "file": "raw/web/x.md", "status": "pending"}
+        ]))
+
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, [
+            "compile",
+            "--tag-candidate", "ingest-abc",
+            "--verdict", "yes",
+            "--score", "0.85",
+            "--reason", "good pattern",
+            "--suggested-type", "pattern",
+            "--suggested-tags", "agent-patterns,llm",
+            "--json",
+        ])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["success"] is True
+
+        loaded = json.loads(
+            (tmp_path / "raw" / "inbox" / ".manifest.json").read_text()
+        )
+        assert loaded[0]["candidate"]["verdict"] == "yes"
+        assert loaded[0]["candidate"]["suggested_tags"] == ["agent-patterns", "llm"]
+
+
+# ---------------------------------------------------------------------------
+# List inbox -- candidates-only filter
+# ---------------------------------------------------------------------------
+
+
+class TestListInboxCandidatesOnly:
+    def test_filters_to_yes_candidates_by_default(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "_meta").mkdir(parents=True)
+        (wiki_root / "permanent").mkdir(parents=True)
+        (tmp_path / "raw" / "inbox").mkdir(parents=True)
+        (tmp_path / ".kb-config.yml").write_text(
+            "vault_root: .\n"
+        )
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
+            {"id": "ingest-yes", "status": "pending",
+             "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"}},
+            {"id": "ingest-no", "status": "pending",
+             "candidate": {"verdict": "no", "score": 0.05, "reason": "noise"}},
+            {"id": "ingest-maybe", "status": "pending",
+             "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"}},
+            {"id": "ingest-untagged", "status": "pending"},
+        ]))
+
+        monkeypatch.chdir(tmp_path)
+        from llm_wiki.cli import app
+        runner = CliRunner()
+
+        result = runner.invoke(app, ["compile", "--list-inbox", "--candidates-only", "--json"])
+
+        assert result.exit_code == 0, result.output
+        entries = json.loads(result.stdout)
+        ids = [e["id"] for e in entries]
+        assert ids == ["ingest-yes"]
+
+    def test_include_maybe_with_flag(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "wiki"
+        (wiki_root / "_meta").mkdir(parents=True)
+        (wiki_root / "permanent").mkdir(parents=True)
+        (tmp_path / "raw" / "inbox").mkdir(parents=True)
+        (tmp_path / ".kb-config.yml").write_text(
+            "vault_root: .\n"
+        )
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
+            {"id": "ingest-yes", "status": "pending",
+             "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"}},
+            {"id": "ingest-maybe", "status": "pending",
+             "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"}},
+        ]))
+
+        monkeypatch.chdir(tmp_path)
+        from llm_wiki.cli import app
+        runner = CliRunner()
+
+        result = runner.invoke(app, [
+            "compile", "--list-inbox", "--candidates-only", "--include-maybe", "--json",
+        ])
+
+        assert result.exit_code == 0, result.output
+        ids = [e["id"] for e in json.loads(result.stdout)]
+        assert sorted(ids) == ["ingest-maybe", "ingest-yes"]

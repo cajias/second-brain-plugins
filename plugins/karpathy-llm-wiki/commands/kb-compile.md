@@ -31,6 +31,50 @@ If the inbox is empty, tell the user: "Inbox is empty. Use `/kb-ingest` to add r
 
 If `--batch N` was specified, take only the first N pending items.
 
+## Step 2.5: Decide single-pass vs two-pass
+
+Count the pending items. If **fewer than 50**, use single-pass: skip directly to Step 3.
+
+If **50 or more pending items**, run a **pre-filter pass first**. The yield rate on saturated chat corpora is ~1% if you extract from every entry; pre-filtering lifts effective yield to ~15-20% on the entries you actually extract from. This saves tokens and produces better notes.
+
+### Pre-filter pass (Pass 1)
+
+For each pending item:
+
+1. **Read the raw file** (the `file` field).
+2. **Skim only** -- do not extract. Decide one of three verdicts:
+   - **`yes`**: contains a concrete, durable, generalizable insight worth a permanent note (specific pattern, decision rationale, surprising fact, reusable design).
+   - **`no`**: personal/household, ephemeral Q&A, recipe lookup, role-play, image-gen prompt, "look at this file" opener, conversation winding-down.
+   - **`maybe`**: borderline -- might be useful but uncertain. The second pass can spot-check these if budget allows.
+3. **Tag the verdict on the manifest** with `kb compile --tag-candidate`:
+
+   ```bash
+   kb compile --tag-candidate <ingest-id> \
+       --verdict yes \
+       --score 0.85 \
+       --reason "specific pattern with measurable result" \
+       --suggested-type pattern \
+       --suggested-tags "agent-patterns,llm"
+   ```
+
+4. The pass-1 prompt to yourself per entry should be **under 30 seconds of attention** -- quick skim, not deep read. The whole point is cheapness.
+
+### Extract pass (Pass 2)
+
+After pass 1 completes, fetch only the keepers:
+
+```bash
+kb compile --list-inbox --candidates-only --json
+```
+
+Process those entries in Step 3 using the **`suggested_type`** and **`suggested_tags`** from the candidate metadata as a starting hint (not a constraint -- your full read may reveal a better type/tags).
+
+If pass-1 yield was unusually low (<10% verdict=yes on a corpus you expected to be richer), re-run with `--include-maybe` to spot-check the borderline set:
+
+```bash
+kb compile --list-inbox --candidates-only --include-maybe --json
+```
+
 ## Step 3: Process each pending item
 
 For each pending item in the inbox:

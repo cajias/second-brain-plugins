@@ -203,6 +203,88 @@ def _mark_processed(entry_id: str, cfg: WikiConfig) -> dict:
     return {"success": True, "entry_id": entry_id, "new_status": "processed"}
 
 
+_VALID_VERDICTS = {"yes", "no", "maybe"}
+
+
+def _tag_candidate(
+    entry_id: str,
+    verdict: str,
+    score: float,
+    reason: str,
+    suggested_type: Optional[str],
+    suggested_tags: list[str],
+    cfg: WikiConfig,
+) -> dict:
+    """Record a pre-filter verdict on a manifest entry.
+
+    The verdict is one of "yes", "no", or "maybe". The kb-compile skill
+    calls this during the lightweight first pass; the second extraction
+    pass reads it back via --list-inbox --candidates-only.
+    """
+    if verdict not in _VALID_VERDICTS:
+        return {
+            "success": False,
+            "error": f"Invalid verdict '{verdict}'. Must be one of: {sorted(_VALID_VERDICTS)}",
+        }
+
+    if not 0.0 <= score <= 1.0:
+        return {
+            "success": False,
+            "error": f"Invalid score {score}. Must be between 0.0 and 1.0 inclusive.",
+        }
+
+    warnings: list[str] = []
+    if suggested_type is not None:
+        taxonomy = load_taxonomy_safe(cfg.wiki_meta / "tag-taxonomy.md")
+        if taxonomy["knowledge_types"] and suggested_type not in taxonomy["knowledge_types"]:
+            warnings.append(
+                f"suggested_type '{suggested_type}' not in approved list: "
+                f"{sorted(taxonomy['knowledge_types'])}"
+            )
+
+    manifest_path = cfg.raw_inbox / ".manifest.json"
+    if not manifest_path.exists():
+        return {"success": False, "error": "Manifest file not found."}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, IOError) as e:
+        return {"success": False, "error": f"Could not read manifest: {e}"}
+
+    if isinstance(manifest, list):
+        entries = manifest
+    elif isinstance(manifest, dict) and "entries" in manifest:
+        entries = manifest["entries"]
+    else:
+        return {"success": False, "error": "Unexpected manifest format."}
+
+    found = False
+    for entry in entries:
+        if entry.get("id") == entry_id:
+            entry["candidate"] = {
+                "verdict": verdict,
+                "score": score,
+                "reason": reason,
+                "suggested_type": suggested_type,
+                "suggested_tags": list(suggested_tags),
+                "tagged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            found = True
+            break
+
+    if not found:
+        return {"success": False, "error": f"Entry '{entry_id}' not found in manifest."}
+
+    try:
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except IOError as e:
+        return {"success": False, "error": f"Could not write manifest: {e}"}
+
+    result = {"success": True, "entry_id": entry_id, "candidate": entry["candidate"]}
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Typer command
 # ---------------------------------------------------------------------------
@@ -221,9 +303,42 @@ def compile_notes(
         False, "--list-inbox",
         help="List pending items in the inbox manifest.",
     ),
+    candidates_only: bool = typer.Option(
+        False, "--candidates-only",
+        help="With --list-inbox, show only entries tagged verdict=yes (the pass-1 keepers).",
+    ),
+    include_maybe: bool = typer.Option(
+        False, "--include-maybe",
+        help="With --candidates-only, also include verdict=maybe entries.",
+    ),
     mark_processed: Optional[str] = typer.Option(
         None, "--mark-processed",
         help="Mark a manifest entry as processed.",
+    ),
+    # Tag-candidate fields (used with --tag-candidate)
+    tag_candidate: Optional[str] = typer.Option(
+        None, "--tag-candidate",
+        help="Record a pre-filter verdict on a manifest entry (pass 1 of two-pass compile).",
+    ),
+    verdict: Optional[str] = typer.Option(
+        None, "--verdict",
+        help="Verdict for --tag-candidate: yes, no, or maybe.",
+    ),
+    score: Optional[float] = typer.Option(
+        None, "--score",
+        help="Confidence score 0.0-1.0 for --tag-candidate.",
+    ),
+    reason: Optional[str] = typer.Option(
+        None, "--reason",
+        help="Short justification for --tag-candidate verdict.",
+    ),
+    suggested_type: Optional[str] = typer.Option(
+        None, "--suggested-type",
+        help="Hint for second-pass extractor: knowledge_type to consider.",
+    ),
+    suggested_tags: Optional[str] = typer.Option(
+        None, "--suggested-tags",
+        help="Comma-separated tag hints for second-pass extractor.",
     ),
     # Note fields (used with --write-note)
     title: Optional[str] = typer.Option(None, "--title", help="Note title."),
@@ -344,14 +459,31 @@ def compile_notes(
 
     elif list_inbox:
         entries = _list_inbox(cfg)
+
+        if candidates_only:
+            allowed = {"yes"} | ({"maybe"} if include_maybe else set())
+            entries = [
+                e for e in entries
+                if isinstance(e.get("candidate"), dict)
+                and e["candidate"].get("verdict") in allowed
+            ]
+
         if json_output:
             typer.echo(json.dumps(entries, indent=2))
         else:
             if not entries:
-                typer.echo("Inbox is empty. No pending items.")
+                if candidates_only:
+                    typer.echo("No candidate entries found. Run pass-1 tagging first.")
+                else:
+                    typer.echo("Inbox is empty. No pending items.")
             else:
                 pending = [e for e in entries if e.get("status") == "pending"]
-                typer.echo(f"Inbox: {len(entries)} total, {len(pending)} pending\n")
+                header = (
+                    f"Inbox: {len(entries)} candidate(s) shown"
+                    if candidates_only
+                    else f"Inbox: {len(entries)} total, {len(pending)} pending"
+                )
+                typer.echo(f"{header}\n")
                 for entry in entries:
                     status_marker = "[x]" if entry.get("status") == "processed" else "[ ]"
                     typer.echo(f"  {status_marker} {entry.get('id', 'no-id')}")
@@ -361,6 +493,12 @@ def compile_notes(
                     typer.echo(f"      status: {entry.get('status', 'unknown')}")
                     if entry.get("file"):
                         typer.echo(f"      file:   {entry['file']}")
+                    cand = entry.get("candidate")
+                    if isinstance(cand, dict):
+                        typer.echo(
+                            f"      candidate: verdict={cand.get('verdict')} "
+                            f"score={cand.get('score')} reason={cand.get('reason')}"
+                        )
                     typer.echo("")
 
     elif mark_processed:
@@ -374,9 +512,52 @@ def compile_notes(
                 typer.echo(f"Error: {result['error']}", err=True)
                 raise typer.Exit(code=1)
 
+    elif tag_candidate:
+        if not verdict:
+            typer.echo("Error: --tag-candidate requires --verdict", err=True)
+            raise typer.Exit(code=1)
+        if score is None:
+            typer.echo("Error: --tag-candidate requires --score", err=True)
+            raise typer.Exit(code=1)
+        if not reason:
+            typer.echo("Error: --tag-candidate requires --reason", err=True)
+            raise typer.Exit(code=1)
+
+        tag_list = (
+            [t.strip() for t in suggested_tags.split(",") if t.strip()]
+            if suggested_tags else []
+        )
+        result = _tag_candidate(
+            entry_id=tag_candidate,
+            verdict=verdict,
+            score=score,
+            reason=reason,
+            suggested_type=suggested_type,
+            suggested_tags=tag_list,
+            cfg=cfg,
+        )
+
+        if json_output:
+            typer.echo(json.dumps(result, indent=2))
+        else:
+            if result["success"]:
+                cand = result["candidate"]
+                typer.echo(
+                    f"Tagged '{tag_candidate}' as candidate "
+                    f"(verdict={cand['verdict']}, score={cand['score']:.2f})"
+                )
+                typer.echo(f"  reason: {cand['reason']}")
+                if cand.get("suggested_type"):
+                    typer.echo(f"  suggested_type: {cand['suggested_type']}")
+                if cand.get("suggested_tags"):
+                    typer.echo(f"  suggested_tags: {cand['suggested_tags']}")
+            else:
+                typer.echo(f"Error: {result['error']}", err=True)
+                raise typer.Exit(code=1)
+
     else:
         typer.echo(
-            "Error: Specify one of --check-dedup, --write-note, --list-inbox, or --mark-processed",
+            "Error: Specify one of --check-dedup, --write-note, --list-inbox, --mark-processed, or --tag-candidate",
             err=True,
         )
         raise typer.Exit(code=1)
