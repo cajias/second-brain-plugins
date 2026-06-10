@@ -7,7 +7,11 @@ for valid tags and knowledge types, and supports validation.
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def load_taxonomy(taxonomy_path: Path) -> dict[str, set[str]]:
@@ -24,7 +28,8 @@ def load_taxonomy(taxonomy_path: Path) -> dict[str, set[str]]:
         FileNotFoundError: If the taxonomy file doesn't exist.
     """
     if not taxonomy_path.exists():
-        raise FileNotFoundError(f"Taxonomy file not found: {taxonomy_path}")
+        msg = f"Taxonomy file not found: {taxonomy_path}"
+        raise FileNotFoundError(msg)
 
     content = taxonomy_path.read_text(encoding="utf-8")
     return _parse_taxonomy_content(content)

@@ -1,0 +1,17 @@
+{
+  "description": "Post-edit lint and incremental index for wiki permanent notes",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PLUGIN_ROOT/hooks/scripts/lint-and-index.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

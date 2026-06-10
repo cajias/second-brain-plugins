@@ -13,7 +13,7 @@ The user's input is: `$ARGUMENTS`
 Determine the mode and source:
 
 - **`session <path>`**: Ingest a Claude Code session log (`.jsonl` file)
-- **`file <path>`**: Ingest a document (PDF, markdown, text, code, etc.)
+- **`file <path>`**: Ingest a document (PDF, markdown, text, code, etc.). PDFs are automatically extracted to markdown via Marker; the original PDF is preserved alongside the extracted `.md` in `raw/artifacts/`.
 - **`url <url>`**: Ingest a web article by fetching its content
 - **`text "content"`**: Ingest a quick text snippet inline
 - **`list`** or no arguments: Show pending inbox items
@@ -69,4 +69,5 @@ Run /kb-compile to process these into permanent notes.
 - Ingested items land in `raw/` subdirectories -- they are NOT yet wiki notes.
 - The manifest tracks all pending items for `/kb-compile`.
 - For `url` mode: the CLI extracts text from HTML. If the result is poor quality, suggest the user try a manual copy instead.
+- For `file` mode with PDFs: Marker extracts markdown at ingest time. First PDF ingest downloads ~500MB of ML models (one-time). The manifest points to the extracted `.md`, and `extracted_from` records the original PDF path.
 - If `kb` is not found, tell the user to install the llm-wiki CLI tool.

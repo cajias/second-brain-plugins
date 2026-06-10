@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 runner = CliRunner()
 
@@ -33,7 +38,7 @@ def _read_manifest(wiki_root: Path) -> list[dict]:
 
 def _invoke_ingest(args: list[str], wiki_root: Path):
     """Invoke ingest with cwd set to the wiki_root so config is found."""
-    return runner.invoke(app, ["ingest"] + args, env={"KB_ROOT": str(wiki_root)})
+    return runner.invoke(app, ["ingest", *args], env={"KB_ROOT": str(wiki_root)})
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +51,7 @@ class TestIngestFile:
 
     def test_copies_to_artifacts(self, wiki_root: Path, tmp_path: Path, monkeypatch):
         monkeypatch.chdir(wiki_root)
-        src = _create_source_file(tmp_path, "doc.pdf", "pdf content")
+        src = _create_source_file(tmp_path, "doc.bin", "binary content")
         result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
         assert result.exit_code == 0, f"stderr: {result.output}"
 
@@ -81,6 +86,126 @@ class TestIngestFile:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["ingest", "--mode", "file", "--source", "/nonexistent/file.txt"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# PDF extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _mock_marker(monkeypatch):
+    """Patch _extract_pdf so Marker models are never loaded in tests."""
+    monkeypatch.setattr(
+        "llm_wiki.commands.ingest._extract_pdf",
+        lambda _path: "# Extracted\n\nMocked PDF content about transformers.",
+    )
+
+
+@pytest.mark.usefixtures("_mock_marker")
+class TestIngestPdf:
+    """``kb ingest --mode file --source <path>.pdf`` extracts markdown via Marker."""
+
+    def test_pdf_extracts_markdown(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "paper.pdf", "%PDF-fake-content")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        assert result.exit_code == 0, f"stderr: {result.output}"
+
+        artifacts = wiki_root / "raw" / "artifacts"
+        md_files = list(artifacts.glob("*.md"))
+        assert len(md_files) >= 1, "No extracted .md file created"
+        assert "Mocked PDF content" in md_files[0].read_text()
+
+    def test_pdf_preserves_original(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "paper.pdf", "%PDF-fake-content")
+        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+
+        artifacts = wiki_root / "raw" / "artifacts"
+        pdf_files = list(artifacts.glob("*.pdf"))
+        assert len(pdf_files) >= 1, "Original PDF not preserved"
+
+    def test_pdf_manifest_points_to_markdown(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "paper.pdf", "%PDF-fake-content")
+        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+
+        entries = _read_manifest(wiki_root)
+        pdf_entries = [e for e in entries if e.get("status") == "pending"]
+        assert len(pdf_entries) >= 1
+        assert pdf_entries[-1]["file"].endswith(".md"), "Manifest should point to .md"
+
+    def test_pdf_manifest_has_extracted_from(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "paper.pdf", "%PDF-fake-content")
+        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+
+        entries = _read_manifest(wiki_root)
+        entry = entries[-1]
+        assert "extracted_from" in entry
+        assert entry["extracted_from"].endswith(".pdf")
+
+    def test_pdf_meta_has_original_format(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "paper.pdf", "%PDF-fake-content")
+        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+
+        artifacts = wiki_root / "raw" / "artifacts"
+        meta_files = list(artifacts.glob("*.meta.json"))
+        assert len(meta_files) >= 1
+        meta = json.loads(meta_files[0].read_text())
+        assert meta.get("original_format") == "pdf"
+
+    def test_non_pdf_unchanged(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "notes.txt", "plain text notes")
+        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+
+        entries = _read_manifest(wiki_root)
+        entry = entries[-1]
+        assert entry["file"].endswith(".txt"), "Non-PDF should keep original extension"
+        assert "extracted_from" not in entry
+
+    def test_pdf_uppercase_extension(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "SCAN.PDF", "%PDF-fake")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        assert result.exit_code == 0
+
+        entries = _read_manifest(wiki_root)
+        assert entries[-1]["file"].endswith(".md"), ".PDF should trigger extraction"
+
+
+# ---------------------------------------------------------------------------
+# PDF error handling (outside TestIngestPdf to avoid _mock_marker fixture)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestPdfErrors:
+    """Error cases for PDF ingestion — these use their own mocks."""
+
+    def test_extraction_failure_reports_error(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        monkeypatch.setattr(
+            "llm_wiki.commands.ingest._extract_pdf",
+            lambda _path: (_ for _ in ()).throw(RuntimeError("corrupt PDF")),
+        )
+        src = _create_source_file(tmp_path, "bad.pdf", "%PDF-corrupt")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        assert result.exit_code != 0
+        assert "corrupt PDF" in result.output
+
+    def test_empty_extraction_reports_error(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        monkeypatch.setattr(
+            "llm_wiki.commands.ingest._extract_pdf",
+            lambda _path: "   \n  ",
+        )
+        src = _create_source_file(tmp_path, "scanned.pdf", "%PDF-scanned")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        assert result.exit_code != 0
+        assert "No text could be extracted" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -182,55 +307,3 @@ class TestIngestValidation:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["ingest", "--mode", "invalid-mode", "--source", "test"])
         assert result.exit_code != 0
-
-
-# ---------------------------------------------------------------------------
-# PDF ingest
-# ---------------------------------------------------------------------------
-
-
-class TestIngestPDF:
-    """``kb ingest --mode file <foo.pdf>`` writes a normalized .md, not the binary PDF."""
-
-    def test_pdf_produces_md_artifact(self, wiki_root: Path, sample_pdf_path: Path, monkeypatch):
-        monkeypatch.chdir(wiki_root)
-        result = runner.invoke(
-            app, ["ingest", "--mode", "file", "--source", str(sample_pdf_path), "--json"]
-        )
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        dest = Path(data["dest"])
-        assert dest.suffix == ".md", f"expected .md, got {dest.suffix}"
-        assert dest.exists()
-
-    def test_md_artifact_contains_normalized_text(self, wiki_root: Path, sample_pdf_path: Path, monkeypatch):
-        monkeypatch.chdir(wiki_root)
-        result = runner.invoke(
-            app, ["ingest", "--mode", "file", "--source", str(sample_pdf_path), "--json"]
-        )
-        data = json.loads(result.output)
-        body = Path(data["dest"]).read_text()
-        # The hand-crafted PDF body "h e l l o   w o r l d" must be normalized
-        assert "hello world" in body.lower()
-        # Inter-char bloat must NOT survive
-        assert "h e l l o" not in body
-
-    def test_manifest_entry_points_at_md(self, wiki_root: Path, sample_pdf_path: Path, monkeypatch):
-        monkeypatch.chdir(wiki_root)
-        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(sample_pdf_path)])
-        manifest = _read_manifest(wiki_root)
-        assert len(manifest) == 1
-        assert manifest[0]["file"].endswith(".md")
-        assert manifest[0]["type"] == "file"
-
-    def test_non_pdf_file_unchanged(self, wiki_root: Path, tmp_path: Path, monkeypatch):
-        """Markdown files keep the existing copy-the-bytes behavior."""
-        monkeypatch.chdir(wiki_root)
-        src = _create_source_file(tmp_path, "doc.md", "# Heading\n\nbody")
-        result = runner.invoke(
-            app, ["ingest", "--mode", "file", "--source", str(src), "--json"]
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert Path(data["dest"]).suffix == ".md"
-        assert Path(data["dest"]).read_text() == "# Heading\n\nbody"

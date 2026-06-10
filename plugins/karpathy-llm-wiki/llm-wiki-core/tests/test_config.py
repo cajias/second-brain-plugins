@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-import yaml
 
-from llm_wiki.core.config import get_project_root, load_config, load_raw_config, WikiConfig
+from llm_wiki.core.config import WikiConfig, get_project_root, load_config, load_raw_config
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +34,22 @@ class TestGetProjectRoot:
     def test_error_when_no_config(self, wiki_root_bare: Path):
         with pytest.raises(FileNotFoundError, match="Cannot find"):
             get_project_root(start=wiki_root_bare)
+
+    def test_env_var_overrides_cwd(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root.parent)
+        monkeypatch.setenv("KARPATHY_WIKI_ROOT", str(wiki_root))
+        root = get_project_root()
+        assert root == wiki_root.resolve()
+
+    def test_env_var_error_when_no_config(self, wiki_root_bare: Path, monkeypatch):
+        monkeypatch.setenv("KARPATHY_WIKI_ROOT", str(wiki_root_bare))
+        with pytest.raises(FileNotFoundError, match="KARPATHY_WIKI_ROOT"):
+            get_project_root()
+
+    def test_explicit_start_ignores_env_var(self, wiki_root: Path, wiki_root_bare: Path, monkeypatch):
+        monkeypatch.setenv("KARPATHY_WIKI_ROOT", str(wiki_root_bare))
+        root = get_project_root(start=wiki_root)
+        assert root == wiki_root.resolve()
 
 
 # ---------------------------------------------------------------------------

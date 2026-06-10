@@ -8,17 +8,24 @@ from __future__ import annotations
 import json
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
 
-from llm_wiki.commands.init_cmd import init
-from llm_wiki.commands.ingest import ingest
-from llm_wiki.commands.compile_cmd import compile_notes
-from llm_wiki.commands.search import search
-from llm_wiki.commands.lint import lint
-from llm_wiki.commands.index import index
 from llm_wiki.commands.charts import charts
+from llm_wiki.commands.compile_cmd import compile_notes
+from llm_wiki.commands.index import index
+from llm_wiki.commands.ingest import ingest
+from llm_wiki.commands.init_cmd import init
+from llm_wiki.commands.lint import lint
+from llm_wiki.commands.search import search
+
+
+# `llm_wiki.core.config.load_config` is imported lazily inside `maintenance_enable`
+# to avoid loading config (which may fail with FileNotFoundError) at module import
+# time — every other CLI command imports cli.py via Typer registration.
+
 
 app = typer.Typer(
     name="kb",
@@ -62,6 +69,12 @@ _CRON_JOB_TEMPLATES = [
     "0 4 * * 0 cd {root} && kb charts --all 2>&1 | logger -t kb-charts",
 ]
 
+# Timeout (seconds) for crontab read/write subprocess calls.
+_CRONTAB_TIMEOUT_SEC = 5
+
+# Prefixes that identify cron entries belonging to this plugin's block.
+_CRON_BLOCK_LINE_PREFIXES = ("0 ", "*", "PATH=")
+
 
 def _build_cron_path() -> str:
     """Build a PATH value for cron that includes the active `kb` binary's dir.
@@ -91,34 +104,32 @@ def _get_cron_block(root: str) -> str:
     lint_out = shlex.quote(f"{root}/output/reports/lint-weekly.json")
     path_line = f"PATH={_build_cron_path()}"
     lines = [_CRON_HEADER, path_line]
-    for tmpl in _CRON_JOB_TEMPLATES:
-        lines.append(tmpl.format(root=quoted_root, lint_out=lint_out))
+    lines.extend(tmpl.format(root=quoted_root, lint_out=lint_out) for tmpl in _CRON_JOB_TEMPLATES)
     return "\n".join(lines)
 
 
 def _read_crontab() -> str:
     """Read the current crontab, returning empty string if none."""
-    import subprocess
     try:
         result = subprocess.run(
-            ["crontab", "-l"],
+            ["crontab", "-l"],  # noqa: S607  # `crontab` resolved via system PATH
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=_CRONTAB_TIMEOUT_SEC,
+            check=False,
         )
-        return result.stdout if result.returncode == 0 else ""
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
+    return result.stdout if result.returncode == 0 else ""
 
 
 def _write_crontab(content: str) -> None:
     """Write content as the new crontab."""
-    import subprocess
     subprocess.run(
-        ["crontab", "-"],
+        ["crontab", "-"],  # noqa: S607  # `crontab` resolved via system PATH
         input=content,
         text=True,
-        timeout=5,
+        timeout=_CRONTAB_TIMEOUT_SEC,
         check=True,
     )
 
@@ -142,11 +153,7 @@ def _remove_kb_block(crontab_text: str) -> str:
         if skip and stripped == "":
             skip = False
             continue
-        if skip and (
-            stripped.startswith("0 ")
-            or stripped.startswith("*")
-            or stripped.startswith("PATH=")
-        ):
+        if skip and stripped.startswith(_CRON_BLOCK_LINE_PREFIXES):
             continue
         skip = False
         result.append(line)
@@ -158,12 +165,14 @@ def maintenance_enable(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
 ) -> None:
     """Install maintenance cron jobs into the system crontab."""
-    from llm_wiki.core.config import load_config
+    # Imported lazily so `kb --help` still works in directories with no .kb-config.yml.
+    from llm_wiki.core.config import load_config  # noqa: PLC0415  # lazy: defer config load until command runs
+
     try:
         cfg = load_config()
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     root = str(cfg.project_root)
     cron_block = _get_cron_block(root)
@@ -214,14 +223,13 @@ def maintenance_status(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON."),
 ) -> None:
     """Check if maintenance cron jobs exist."""
-    import subprocess
-
     try:
         result = subprocess.run(
-            ["crontab", "-l"],
+            ["crontab", "-l"],  # noqa: S607  # `crontab` resolved via system PATH
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=_CRONTAB_TIMEOUT_SEC,
+            check=False,
         )
         crontab_text = result.stdout
     except (subprocess.TimeoutExpired, FileNotFoundError):

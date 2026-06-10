@@ -14,18 +14,36 @@ mechanical steps.
 from __future__ import annotations
 
 import json
-import random
+import logging
 import re
+import secrets
 import string
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import typer
 
-from llm_wiki.core.config import load_config, WikiConfig
+from llm_wiki.commands.charts import _generate_all_charts
+from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.dedup import check_duplicate
 from llm_wiki.core.taxonomy import load_taxonomy_safe
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_MAX_SLUG_LEN = 80
+_MAX_TAGS = 6
+_NOTE_ID_RANDOM_LEN = 5
+_VALID_VERDICTS = {"yes", "no", "maybe"}
 
 
 # ---------------------------------------------------------------------------
@@ -38,15 +56,16 @@ def _slugify(text: str) -> str:
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     text = re.sub(r"-+", "-", text).strip("-")
-    if len(text) > 80:
-        text = text[:80].rsplit("-", 1)[0]
+    if len(text) > _MAX_SLUG_LEN:
+        text = text[:_MAX_SLUG_LEN].rsplit("-", 1)[0]
     return text
 
 
 def _generate_id() -> str:
     """Generate a note ID in the format perm-YYYYMMDD-XXXXX."""
-    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    random_chars = "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    date_str = datetime.now(UTC).strftime("%Y%m%d")
+    alphabet = string.ascii_lowercase + string.digits
+    random_chars = "".join(secrets.choice(alphabet) for _ in range(_NOTE_ID_RANDOM_LEN))
     return f"perm-{date_str}-{random_chars}"
 
 
@@ -55,12 +74,12 @@ def _generate_id() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _check_dedup(query: str, cfg: WikiConfig) -> dict:
+def _check_dedup(query: str, cfg: WikiConfig) -> dict[str, Any]:
     """Check for duplicate/similar content in the LanceDB index."""
     return check_duplicate(query, cfg.db_path, cfg.table_name)
 
 
-def _write_note(
+def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signature
     title: str,
     knowledge_type: str,
     tags: list[str],
@@ -69,7 +88,7 @@ def _write_note(
     body: str,
     cfg: WikiConfig,
     dry_run: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Create a new permanent note with full frontmatter."""
     # Validate against taxonomy
     taxonomy_path = cfg.wiki_meta / "tag-taxonomy.md"
@@ -78,20 +97,16 @@ def _write_note(
     warnings = []
     if taxonomy["knowledge_types"] and knowledge_type not in taxonomy["knowledge_types"]:
         warnings.append(
-            f"knowledge_type '{knowledge_type}' not in approved list: "
-            f"{sorted(taxonomy['knowledge_types'])}"
+            f"knowledge_type '{knowledge_type}' not in approved list: {sorted(taxonomy['knowledge_types'])}"
         )
 
     if taxonomy["tags"]:
         invalid_tags = [t for t in tags if t not in taxonomy["tags"]]
         if invalid_tags:
-            warnings.append(
-                f"Tags not in approved taxonomy: {invalid_tags}. "
-                f"Approved: {sorted(taxonomy['tags'])}"
-            )
+            warnings.append(f"Tags not in approved taxonomy: {invalid_tags}. Approved: {sorted(taxonomy['tags'])}")
 
-    if len(tags) > 6:
-        warnings.append(f"Too many tags ({len(tags)}). Maximum is 6.")
+    if len(tags) > _MAX_TAGS:
+        warnings.append(f"Too many tags ({len(tags)}). Maximum is {_MAX_TAGS}.")
 
     note_id = _generate_id()
     slug = _slugify(title)
@@ -104,31 +119,36 @@ def _write_note(
         filename = f"{slug}.md"
         filepath = cfg.wiki_permanent / filename
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
     # Build note content with deterministic field ordering
-    lines = ["---"]
-    lines.append(f"id: {note_id}")
-    lines.append("type: permanent")
-    lines.append(f"knowledge_type: {knowledge_type}")
-    lines.append("status: pending")
-    lines.append(f"confidence: {confidence}")
-    lines.append("scope: universal")
-    lines.append("tags:")
-    for tag in tags:
-        lines.append(f"  - {tag}")
-    lines.append(f'source: "{source}"')
-    lines.append(f'created: "{now}"')
-    lines.append("---")
-    lines.append("")
-    lines.append(f"# {title}")
-    lines.append("")
-    lines.append(body)
-    lines.append("")
+    lines = [
+        "---",
+        f"id: {note_id}",
+        "type: permanent",
+        f"knowledge_type: {knowledge_type}",
+        "status: pending",
+        f"confidence: {confidence}",
+        "scope: universal",
+        "tags:",
+    ]
+    lines.extend(f"  - {tag}" for tag in tags)
+    lines.extend(
+        [
+            f'source: "{source}"',
+            f'created: "{now}"',
+            "---",
+            "",
+            f"# {title}",
+            "",
+            body,
+            "",
+        ]
+    )
 
     note_content = "\n".join(lines)
 
-    result = {
+    result: dict[str, Any] = {
         "id": note_id,
         "title": title,
         "filename": filename,
@@ -151,44 +171,58 @@ def _write_note(
     return result
 
 
-def _list_inbox(cfg: WikiConfig) -> list[dict]:
+def _list_inbox(cfg: WikiConfig) -> list[dict[str, Any]]:
     """List all entries in the inbox manifest."""
     manifest_path = cfg.raw_inbox / ".manifest.json"
     if not manifest_path.exists():
         return []
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return []
     if isinstance(manifest, list):
-        return manifest
-    elif isinstance(manifest, dict) and "entries" in manifest:
-        return manifest["entries"]
+        return list(manifest)
+    if isinstance(manifest, dict) and "entries" in manifest:
+        entries = manifest["entries"]
+        if isinstance(entries, list):
+            return list(entries)
     return []
 
 
-def _mark_processed(entry_id: str, cfg: WikiConfig) -> dict:
-    """Update a manifest entry's status from 'pending' to 'processed'."""
-    manifest_path = cfg.raw_inbox / ".manifest.json"
+def _load_manifest_entries(manifest_path: Path) -> tuple[Any | None, list[dict[str, Any]] | None, str | None]:
+    """Load + normalize the manifest into a (manifest, entries, error) tuple.
+
+    Returns (manifest, entries, None) on success, or (None, None, error_message) on failure.
+    """
     if not manifest_path.exists():
-        return {"success": False, "error": "Manifest file not found."}
+        return None, None, "Manifest file not found."
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError) as e:
-        return {"success": False, "error": f"Could not read manifest: {e}"}
+    except (OSError, json.JSONDecodeError) as e:
+        return None, None, f"Could not read manifest: {e}"
 
     if isinstance(manifest, list):
         entries = manifest
     elif isinstance(manifest, dict) and "entries" in manifest:
         entries = manifest["entries"]
     else:
-        return {"success": False, "error": "Unexpected manifest format."}
+        return None, None, "Unexpected manifest format."
+
+    return manifest, entries, None
+
+
+def _mark_processed(entry_id: str, cfg: WikiConfig) -> dict[str, Any]:
+    """Update a manifest entry's status from 'pending' to 'processed'."""
+    manifest_path = cfg.raw_inbox / ".manifest.json"
+    manifest, entries, err = _load_manifest_entries(manifest_path)
+    if err is not None or entries is None:
+        return {"success": False, "error": err}
 
     found = False
     for entry in entries:
         if entry.get("id") == entry_id:
             entry["status"] = "processed"
-            entry["processed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            entry["processed_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
             found = True
             break
 
@@ -197,67 +231,57 @@ def _mark_processed(entry_id: str, cfg: WikiConfig) -> dict:
 
     try:
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    except IOError as e:
+    except OSError as e:
         return {"success": False, "error": f"Could not write manifest: {e}"}
 
     return {"success": True, "entry_id": entry_id, "new_status": "processed"}
 
 
-_VALID_VERDICTS = {"yes", "no", "maybe"}
+def _validate_candidate_inputs(
+    verdict: str, score: float, suggested_type: str | None, cfg: WikiConfig
+) -> tuple[str | None, list[str]]:
+    """Validate verdict/score/suggested_type. Returns (error_message, warnings)."""
+    warnings: list[str] = []
+    if verdict not in _VALID_VERDICTS:
+        return f"Invalid verdict '{verdict}'. Must be one of: {sorted(_VALID_VERDICTS)}", warnings
+    if not 0.0 <= score <= 1.0:
+        return f"Invalid score {score}. Must be between 0.0 and 1.0 inclusive.", warnings
+
+    if suggested_type is not None:
+        taxonomy = load_taxonomy_safe(cfg.wiki_meta / "tag-taxonomy.md")
+        if taxonomy["knowledge_types"] and suggested_type not in taxonomy["knowledge_types"]:
+            warnings.append(
+                f"suggested_type '{suggested_type}' not in approved list: {sorted(taxonomy['knowledge_types'])}"
+            )
+
+    return None, warnings
 
 
-def _tag_candidate(
+def _tag_candidate(  # Verdict fields are intrinsic to the call signature
     entry_id: str,
     verdict: str,
     score: float,
     reason: str,
-    suggested_type: Optional[str],
+    suggested_type: str | None,
     suggested_tags: list[str],
     cfg: WikiConfig,
-) -> dict:
+) -> dict[str, Any]:
     """Record a pre-filter verdict on a manifest entry.
 
     The verdict is one of "yes", "no", or "maybe". The kb-compile skill
     calls this during the lightweight first pass; the second extraction
     pass reads it back via --list-inbox --candidates-only.
     """
-    if verdict not in _VALID_VERDICTS:
-        return {
-            "success": False,
-            "error": f"Invalid verdict '{verdict}'. Must be one of: {sorted(_VALID_VERDICTS)}",
-        }
-
-    if not 0.0 <= score <= 1.0:
-        return {
-            "success": False,
-            "error": f"Invalid score {score}. Must be between 0.0 and 1.0 inclusive.",
-        }
-
-    warnings: list[str] = []
-    if suggested_type is not None:
-        taxonomy = load_taxonomy_safe(cfg.wiki_meta / "tag-taxonomy.md")
-        if taxonomy["knowledge_types"] and suggested_type not in taxonomy["knowledge_types"]:
-            warnings.append(
-                f"suggested_type '{suggested_type}' not in approved list: "
-                f"{sorted(taxonomy['knowledge_types'])}"
-            )
+    err, warnings = _validate_candidate_inputs(verdict, score, suggested_type, cfg)
+    if err is not None:
+        return {"success": False, "error": err}
 
     manifest_path = cfg.raw_inbox / ".manifest.json"
-    if not manifest_path.exists():
-        return {"success": False, "error": "Manifest file not found."}
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, IOError) as e:
-        return {"success": False, "error": f"Could not read manifest: {e}"}
+    manifest, entries, load_err = _load_manifest_entries(manifest_path)
+    if load_err is not None or entries is None:
+        return {"success": False, "error": load_err}
 
-    if isinstance(manifest, list):
-        entries = manifest
-    elif isinstance(manifest, dict) and "entries" in manifest:
-        entries = manifest["entries"]
-    else:
-        return {"success": False, "error": "Unexpected manifest format."}
-
-    found = False
+    found_entry: dict[str, Any] | None = None
     for entry in entries:
         if entry.get("id") == entry_id:
             entry["candidate"] = {
@@ -266,23 +290,266 @@ def _tag_candidate(
                 "reason": reason,
                 "suggested_type": suggested_type,
                 "suggested_tags": list(suggested_tags),
-                "tagged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                "tagged_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"),
             }
-            found = True
+            found_entry = entry
             break
 
-    if not found:
+    if found_entry is None:
         return {"success": False, "error": f"Entry '{entry_id}' not found in manifest."}
 
     try:
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    except IOError as e:
+    except OSError as e:
         return {"success": False, "error": f"Could not write manifest: {e}"}
 
-    result = {"success": True, "entry_id": entry_id, "candidate": entry["candidate"]}
+    result: dict[str, Any] = {"success": True, "entry_id": entry_id, "candidate": found_entry["candidate"]}
     if warnings:
         result["warnings"] = warnings
     return result
+
+
+# ---------------------------------------------------------------------------
+# Sub-command handlers (one per CLI mode)
+# ---------------------------------------------------------------------------
+
+
+def _print_dedup_result(result: dict[str, Any]) -> None:
+    """Render a dedup-check result as text."""
+    status = result["status"]
+    top = result["top_score"]
+    status_labels = {
+        "duplicate": "DUPLICATE (>=0.92)",
+        "similar": "SIMILAR (0.80-0.91) -- review recommended",
+        "unique": "UNIQUE (<0.80)",
+        "error": "ERROR",
+    }
+    typer.echo(f"Dedup check: {status_labels.get(status, status)}")
+    typer.echo(f"Top similarity score: {top:.4f}")
+    if result.get("message"):
+        typer.echo(f"Note: {result['message']}")
+    if result["matches"]:
+        typer.echo("\nClosest matches:")
+        for m in result["matches"]:
+            typer.echo(f"  - {m['title']} (score: {m['score']:.4f})")
+            typer.echo(f"    {m['file_path']}")
+
+
+def _handle_check_dedup(query: str, cfg: WikiConfig, json_output: bool) -> None:
+    result = _check_dedup(query, cfg)
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        _print_dedup_result(result)
+
+
+def _validate_write_note_fields(  # one parameter per CLI flag
+    title: str | None,
+    knowledge_type: str | None,
+    tags: str | None,
+    confidence: str | None,
+    source: str | None,
+    body: str | None,
+) -> tuple[str, str, str, str, str, str]:
+    """Ensure all required --write-note fields are present; return narrowed strings."""
+    missing = [
+        name
+        for name, value in (
+            ("--title", title),
+            ("--knowledge-type", knowledge_type),
+            ("--tags", tags),
+            ("--confidence", confidence),
+            ("--source", source),
+            ("--body", body),
+        )
+        if not value
+    ]
+    if (
+        missing
+        or title is None
+        or knowledge_type is None
+        or tags is None
+        or confidence is None
+        or source is None
+        or body is None
+    ):
+        typer.echo(f"Error: --write-note requires: {', '.join(missing)}", err=True)
+        raise typer.Exit(code=1)
+    return title, knowledge_type, tags, confidence, source, body
+
+
+def _print_write_result(result: dict[str, Any], dry_run: bool) -> None:
+    """Render a write-note result as human-readable text."""
+    if result.get("warnings"):
+        for w in result["warnings"]:
+            typer.echo(f"WARNING: {w}")
+
+    if dry_run:
+        typer.echo("\n[DRY RUN] Would create note:")
+        typer.echo(f"  ID:       {result['id']}")
+        typer.echo(f"  Title:    {result['title']}")
+        typer.echo(f"  File:     {result['filepath']}")
+        typer.echo(f"  Type:     {result['knowledge_type']}")
+        typer.echo(f"  Tags:     {result['tags']}")
+        typer.echo(f"  Confidence: {result['confidence']}")
+        if result.get("preview"):
+            typer.echo("\n--- Preview ---")
+            typer.echo(result["preview"])
+            typer.echo("--- End Preview ---")
+    else:
+        typer.echo(f"Created note: {result['filepath']}")
+        typer.echo(f"  ID:   {result['id']}")
+        typer.echo(f"  Type: {result['knowledge_type']}")
+        typer.echo(f"  Tags: {result['tags']}")
+
+
+def _handle_write_note(  # noqa: PLR0913  # Each note field is a discrete CLI input
+    title: str | None,
+    knowledge_type: str | None,
+    tags: str | None,
+    confidence: str | None,
+    source: str | None,
+    body: str | None,
+    cfg: WikiConfig,
+    dry_run: bool,
+    json_output: bool,
+) -> None:
+    valid_title, valid_kt, valid_tags, valid_conf, valid_source, valid_body = _validate_write_note_fields(
+        title, knowledge_type, tags, confidence, source, body
+    )
+    tag_list = [t.strip() for t in valid_tags.split(",") if t.strip()]
+    result = _write_note(
+        title=valid_title,
+        knowledge_type=valid_kt,
+        tags=tag_list,
+        confidence=valid_conf,
+        source=valid_source,
+        body=valid_body,
+        cfg=cfg,
+        dry_run=dry_run,
+    )
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        _print_write_result(result, dry_run)
+
+    if not dry_run and result.get("written"):
+        _auto_refresh_charts(cfg)
+
+
+def _filter_candidate_entries(entries: list[dict[str, Any]], include_maybe: bool) -> list[dict[str, Any]]:
+    """Filter entries to those tagged verdict=yes (and verdict=maybe if include_maybe)."""
+    allowed = {"yes"} | ({"maybe"} if include_maybe else set())
+    return [e for e in entries if isinstance(e.get("candidate"), dict) and e["candidate"].get("verdict") in allowed]
+
+
+def _print_inbox_entries(entries: list[dict[str, Any]], candidates_only: bool) -> None:
+    """Render inbox entries in human-readable form."""
+    if not entries:
+        if candidates_only:
+            typer.echo("No candidate entries found. Run pass-1 tagging first.")
+        else:
+            typer.echo("Inbox is empty. No pending items.")
+        return
+
+    pending = [e for e in entries if e.get("status") == "pending"]
+    header = (
+        f"Inbox: {len(entries)} candidate(s) shown"
+        if candidates_only
+        else f"Inbox: {len(entries)} total, {len(pending)} pending"
+    )
+    typer.echo(f"{header}\n")
+    for entry in entries:
+        status_marker = "[x]" if entry.get("status") == "processed" else "[ ]"
+        typer.echo(f"  {status_marker} {entry.get('id', 'no-id')}")
+        typer.echo(f"      source: {entry.get('source', 'unknown')}")
+        typer.echo(f"      type:   {entry.get('type', 'unknown')}")
+        typer.echo(f"      date:   {entry.get('date', entry.get('ingested_at', 'unknown'))}")
+        typer.echo(f"      status: {entry.get('status', 'unknown')}")
+        if entry.get("file"):
+            typer.echo(f"      file:   {entry['file']}")
+        cand = entry.get("candidate")
+        if isinstance(cand, dict):
+            typer.echo(
+                f"      candidate: verdict={cand.get('verdict')} score={cand.get('score')} reason={cand.get('reason')}"
+            )
+        typer.echo("")
+
+
+def _handle_list_inbox(cfg: WikiConfig, candidates_only: bool, include_maybe: bool, json_output: bool) -> None:
+    entries = _list_inbox(cfg)
+    if candidates_only:
+        entries = _filter_candidate_entries(entries, include_maybe)
+
+    if json_output:
+        typer.echo(json.dumps(entries, indent=2))
+    else:
+        _print_inbox_entries(entries, candidates_only)
+
+
+def _handle_mark_processed(entry_id: str, cfg: WikiConfig, json_output: bool) -> None:
+    result = _mark_processed(entry_id, cfg)
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    elif result["success"]:
+        typer.echo(f"Marked '{entry_id}' as processed.")
+    else:
+        typer.echo(f"Error: {result['error']}", err=True)
+        raise typer.Exit(code=1)
+
+
+def _validate_tag_candidate_inputs(
+    verdict: str | None, score: float | None, reason: str | None
+) -> tuple[str, float, str]:
+    """Ensure --tag-candidate's required flags are present; return narrowed values."""
+    if not verdict:
+        typer.echo("Error: --tag-candidate requires --verdict", err=True)
+        raise typer.Exit(code=1)
+    if score is None:
+        typer.echo("Error: --tag-candidate requires --score", err=True)
+        raise typer.Exit(code=1)
+    if not reason:
+        typer.echo("Error: --tag-candidate requires --reason", err=True)
+        raise typer.Exit(code=1)
+    return verdict, score, reason
+
+
+def _handle_tag_candidate(  # noqa: PLR0913  # Each verdict field is a discrete CLI input
+    entry_id: str,
+    verdict: str | None,
+    score: float | None,
+    reason: str | None,
+    suggested_type: str | None,
+    suggested_tags: str | None,
+    cfg: WikiConfig,
+    json_output: bool,
+) -> None:
+    valid_verdict, valid_score, valid_reason = _validate_tag_candidate_inputs(verdict, score, reason)
+    tag_list = [t.strip() for t in suggested_tags.split(",") if t.strip()] if suggested_tags else []
+    result = _tag_candidate(
+        entry_id=entry_id,
+        verdict=valid_verdict,
+        score=valid_score,
+        reason=valid_reason,
+        suggested_type=suggested_type,
+        suggested_tags=tag_list,
+        cfg=cfg,
+    )
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    elif result["success"]:
+        cand = result["candidate"]
+        typer.echo(f"Tagged '{entry_id}' as candidate (verdict={cand['verdict']}, score={cand['score']:.2f})")
+        typer.echo(f"  reason: {cand['reason']}")
+        if cand.get("suggested_type"):
+            typer.echo(f"  suggested_type: {cand['suggested_type']}")
+        if cand.get("suggested_tags"):
+            typer.echo(f"  suggested_tags: {cand['suggested_tags']}")
+    else:
+        typer.echo(f"Error: {result['error']}", err=True)
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------
@@ -290,74 +557,94 @@ def _tag_candidate(
 # ---------------------------------------------------------------------------
 
 
-def compile_notes(
-    check_dedup: Optional[str] = typer.Option(
-        None, "--check-dedup",
+def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
+    check_dedup: str | None = typer.Option(
+        None,
+        "--check-dedup",
         help="Check for duplicate/similar content in the index.",
     ),
     write_note: bool = typer.Option(
-        False, "--write-note",
+        False,
+        "--write-note",
         help="Create a new permanent note.",
     ),
     list_inbox: bool = typer.Option(
-        False, "--list-inbox",
+        False,
+        "--list-inbox",
         help="List pending items in the inbox manifest.",
     ),
     candidates_only: bool = typer.Option(
-        False, "--candidates-only",
+        False,
+        "--candidates-only",
         help="With --list-inbox, show only entries tagged verdict=yes (the pass-1 keepers).",
     ),
     include_maybe: bool = typer.Option(
-        False, "--include-maybe",
+        False,
+        "--include-maybe",
         help="With --candidates-only, also include verdict=maybe entries.",
     ),
-    mark_processed: Optional[str] = typer.Option(
-        None, "--mark-processed",
+    mark_processed: str | None = typer.Option(
+        None,
+        "--mark-processed",
         help="Mark a manifest entry as processed.",
     ),
     # Tag-candidate fields (used with --tag-candidate)
-    tag_candidate: Optional[str] = typer.Option(
-        None, "--tag-candidate",
+    tag_candidate: str | None = typer.Option(
+        None,
+        "--tag-candidate",
         help="Record a pre-filter verdict on a manifest entry (pass 1 of two-pass compile).",
     ),
-    verdict: Optional[str] = typer.Option(
-        None, "--verdict",
+    verdict: str | None = typer.Option(
+        None,
+        "--verdict",
         help="Verdict for --tag-candidate: yes, no, or maybe.",
     ),
-    score: Optional[float] = typer.Option(
-        None, "--score",
+    score: float | None = typer.Option(
+        None,
+        "--score",
         help="Confidence score 0.0-1.0 for --tag-candidate.",
     ),
-    reason: Optional[str] = typer.Option(
-        None, "--reason",
+    reason: str | None = typer.Option(
+        None,
+        "--reason",
         help="Short justification for --tag-candidate verdict.",
     ),
-    suggested_type: Optional[str] = typer.Option(
-        None, "--suggested-type",
+    suggested_type: str | None = typer.Option(
+        None,
+        "--suggested-type",
         help="Hint for second-pass extractor: knowledge_type to consider.",
     ),
-    suggested_tags: Optional[str] = typer.Option(
-        None, "--suggested-tags",
+    suggested_tags: str | None = typer.Option(
+        None,
+        "--suggested-tags",
         help="Comma-separated tag hints for second-pass extractor.",
     ),
     # Note fields (used with --write-note)
-    title: Optional[str] = typer.Option(None, "--title", help="Note title."),
-    knowledge_type: Optional[str] = typer.Option(
-        None, "--knowledge-type", help="Knowledge type (fact, pattern, decision, etc.).",
+    title: str | None = typer.Option(None, "--title", help="Note title."),
+    knowledge_type: str | None = typer.Option(
+        None,
+        "--knowledge-type",
+        help="Knowledge type (fact, pattern, decision, etc.).",
     ),
-    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags."),
-    confidence: Optional[str] = typer.Option(
-        None, "--confidence", help="Confidence level: high, medium, low.",
+    tags: str | None = typer.Option(None, "--tags", help="Comma-separated tags."),
+    confidence: str | None = typer.Option(
+        None,
+        "--confidence",
+        help="Confidence level: high, medium, low.",
     ),
-    source: Optional[str] = typer.Option(None, "--source", help="Origin description."),
-    body: Optional[str] = typer.Option(None, "--body", help="Note body content."),
+    source: str | None = typer.Option(None, "--source", help="Origin description."),
+    body: str | None = typer.Option(None, "--body", help="Note body content."),
     # Modifiers
     dry_run: bool = typer.Option(
-        False, "--dry-run", "-n",
+        False,
+        "--dry-run",
+        "-n",
         help="Preview what would be created without writing.",
     ),
     json_output: bool = typer.Option(
-        False, "--json", "-j",
+        False,
+        "--json",
+        "-j",
         help="Output as JSON.",
     ),
 ) -> None:
@@ -371,190 +658,18 @@ def compile_notes(
         cfg = load_config()
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
-    # Determine which mode we're in
     if check_dedup:
-        result = _check_dedup(check_dedup, cfg)
-        if json_output:
-            typer.echo(json.dumps(result, indent=2))
-        else:
-            status = result["status"]
-            top = result["top_score"]
-            status_labels = {
-                "duplicate": "DUPLICATE (>=0.92)",
-                "similar": "SIMILAR (0.80-0.91) -- review recommended",
-                "unique": "UNIQUE (<0.80)",
-                "error": "ERROR",
-            }
-            typer.echo(f"Dedup check: {status_labels.get(status, status)}")
-            typer.echo(f"Top similarity score: {top:.4f}")
-            if result.get("message"):
-                typer.echo(f"Note: {result['message']}")
-            if result["matches"]:
-                typer.echo("\nClosest matches:")
-                for m in result["matches"]:
-                    typer.echo(f"  - {m['title']} (score: {m['score']:.4f})")
-                    typer.echo(f"    {m['file_path']}")
-
+        _handle_check_dedup(check_dedup, cfg, json_output)
     elif write_note:
-        # Validate required fields
-        missing = []
-        if not title:
-            missing.append("--title")
-        if not knowledge_type:
-            missing.append("--knowledge-type")
-        if not tags:
-            missing.append("--tags")
-        if not confidence:
-            missing.append("--confidence")
-        if not source:
-            missing.append("--source")
-        if not body:
-            missing.append("--body")
-        if missing:
-            typer.echo(f"Error: --write-note requires: {', '.join(missing)}", err=True)
-            raise typer.Exit(code=1)
-
-        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-        result = _write_note(
-            title=title,
-            knowledge_type=knowledge_type,
-            tags=tag_list,
-            confidence=confidence,
-            source=source,
-            body=body,
-            cfg=cfg,
-            dry_run=dry_run,
-        )
-
-        if json_output:
-            typer.echo(json.dumps(result, indent=2))
-        else:
-            if result.get("warnings"):
-                for w in result["warnings"]:
-                    typer.echo(f"WARNING: {w}")
-
-            if dry_run:
-                typer.echo(f"\n[DRY RUN] Would create note:")
-                typer.echo(f"  ID:       {result['id']}")
-                typer.echo(f"  Title:    {result['title']}")
-                typer.echo(f"  File:     {result['filepath']}")
-                typer.echo(f"  Type:     {result['knowledge_type']}")
-                typer.echo(f"  Tags:     {result['tags']}")
-                typer.echo(f"  Confidence: {result['confidence']}")
-                if result.get("preview"):
-                    typer.echo(f"\n--- Preview ---")
-                    typer.echo(result["preview"])
-                    typer.echo(f"--- End Preview ---")
-            else:
-                typer.echo(f"Created note: {result['filepath']}")
-                typer.echo(f"  ID:   {result['id']}")
-                typer.echo(f"  Type: {result['knowledge_type']}")
-                typer.echo(f"  Tags: {result['tags']}")
-
-        # Auto-refresh charts after writing a note (unless dry run)
-        if not dry_run and result.get("written"):
-            _auto_refresh_charts(cfg)
-
+        _handle_write_note(title, knowledge_type, tags, confidence, source, body, cfg, dry_run, json_output)
     elif list_inbox:
-        entries = _list_inbox(cfg)
-
-        if candidates_only:
-            allowed = {"yes"} | ({"maybe"} if include_maybe else set())
-            entries = [
-                e for e in entries
-                if isinstance(e.get("candidate"), dict)
-                and e["candidate"].get("verdict") in allowed
-            ]
-
-        if json_output:
-            typer.echo(json.dumps(entries, indent=2))
-        else:
-            if not entries:
-                if candidates_only:
-                    typer.echo("No candidate entries found. Run pass-1 tagging first.")
-                else:
-                    typer.echo("Inbox is empty. No pending items.")
-            else:
-                pending = [e for e in entries if e.get("status") == "pending"]
-                header = (
-                    f"Inbox: {len(entries)} candidate(s) shown"
-                    if candidates_only
-                    else f"Inbox: {len(entries)} total, {len(pending)} pending"
-                )
-                typer.echo(f"{header}\n")
-                for entry in entries:
-                    status_marker = "[x]" if entry.get("status") == "processed" else "[ ]"
-                    typer.echo(f"  {status_marker} {entry.get('id', 'no-id')}")
-                    typer.echo(f"      source: {entry.get('source', 'unknown')}")
-                    typer.echo(f"      type:   {entry.get('type', 'unknown')}")
-                    typer.echo(f"      date:   {entry.get('date', entry.get('ingested_at', 'unknown'))}")
-                    typer.echo(f"      status: {entry.get('status', 'unknown')}")
-                    if entry.get("file"):
-                        typer.echo(f"      file:   {entry['file']}")
-                    cand = entry.get("candidate")
-                    if isinstance(cand, dict):
-                        typer.echo(
-                            f"      candidate: verdict={cand.get('verdict')} "
-                            f"score={cand.get('score')} reason={cand.get('reason')}"
-                        )
-                    typer.echo("")
-
+        _handle_list_inbox(cfg, candidates_only, include_maybe, json_output)
     elif mark_processed:
-        result = _mark_processed(mark_processed, cfg)
-        if json_output:
-            typer.echo(json.dumps(result, indent=2))
-        else:
-            if result["success"]:
-                typer.echo(f"Marked '{mark_processed}' as processed.")
-            else:
-                typer.echo(f"Error: {result['error']}", err=True)
-                raise typer.Exit(code=1)
-
+        _handle_mark_processed(mark_processed, cfg, json_output)
     elif tag_candidate:
-        if not verdict:
-            typer.echo("Error: --tag-candidate requires --verdict", err=True)
-            raise typer.Exit(code=1)
-        if score is None:
-            typer.echo("Error: --tag-candidate requires --score", err=True)
-            raise typer.Exit(code=1)
-        if not reason:
-            typer.echo("Error: --tag-candidate requires --reason", err=True)
-            raise typer.Exit(code=1)
-
-        tag_list = (
-            [t.strip() for t in suggested_tags.split(",") if t.strip()]
-            if suggested_tags else []
-        )
-        result = _tag_candidate(
-            entry_id=tag_candidate,
-            verdict=verdict,
-            score=score,
-            reason=reason,
-            suggested_type=suggested_type,
-            suggested_tags=tag_list,
-            cfg=cfg,
-        )
-
-        if json_output:
-            typer.echo(json.dumps(result, indent=2))
-        else:
-            if result["success"]:
-                cand = result["candidate"]
-                typer.echo(
-                    f"Tagged '{tag_candidate}' as candidate "
-                    f"(verdict={cand['verdict']}, score={cand['score']:.2f})"
-                )
-                typer.echo(f"  reason: {cand['reason']}")
-                if cand.get("suggested_type"):
-                    typer.echo(f"  suggested_type: {cand['suggested_type']}")
-                if cand.get("suggested_tags"):
-                    typer.echo(f"  suggested_tags: {cand['suggested_tags']}")
-            else:
-                typer.echo(f"Error: {result['error']}", err=True)
-                raise typer.Exit(code=1)
-
+        _handle_tag_candidate(tag_candidate, verdict, score, reason, suggested_type, suggested_tags, cfg, json_output)
     else:
         typer.echo(
             "Error: Specify one of --check-dedup, --write-note, --list-inbox, --mark-processed, or --tag-candidate",
@@ -564,9 +679,8 @@ def compile_notes(
 
 
 def _auto_refresh_charts(cfg: WikiConfig) -> None:
-    """Run chart generation after compile operations."""
+    """Run chart generation after compile operations (best-effort)."""
     try:
-        from llm_wiki.commands.charts import _generate_all_charts
         _generate_all_charts(cfg)
-    except Exception:
-        pass  # Charts are best-effort
+    except Exception:  # noqa: BLE001  # best-effort: chart failures must never block note writing
+        logger.debug("Chart auto-refresh failed (best-effort)", exc_info=True)

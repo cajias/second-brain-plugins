@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pytest
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
 from llm_wiki.commands.compile_cmd import _tag_candidate
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 runner = CliRunner()
 
@@ -136,7 +140,7 @@ class TestWriteNote:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(
             app,
-            self._write_note_args(title="Dry Run Note") + ["--dry-run"],
+            [*self._write_note_args(title="Dry Run Note"), "--dry-run"],
         )
         assert result.exit_code == 0
 
@@ -148,7 +152,7 @@ class TestWriteNote:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(
             app,
-            self._write_note_args() + ["--dry-run"],
+            [*self._write_note_args(), "--dry-run"],
         )
         assert result.exit_code == 0
         assert "dry run" in result.stdout.lower()
@@ -257,10 +261,11 @@ class TestTagCandidate:
     def test_tags_existing_entry_with_candidate_metadata(self, tmp_path):
         manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
         manifest.parent.mkdir(parents=True)
-        manifest.write_text(json.dumps([
-            {"id": "ingest-abc", "source": "url", "type": "web",
-             "file": "raw/web/x.md", "status": "pending"}
-        ]))
+        manifest.write_text(
+            json.dumps(
+                [{"id": "ingest-abc", "source": "url", "type": "web", "file": "raw/web/x.md", "status": "pending"}]
+            )
+        )
         cfg = _make_cfg(tmp_path)
 
         result = _tag_candidate(
@@ -286,9 +291,7 @@ class TestTagCandidate:
     def test_rejects_unknown_entry_id(self, tmp_path):
         manifest = tmp_path / "raw" / "inbox" / ".manifest.json"
         manifest.parent.mkdir(parents=True)
-        manifest.write_text(json.dumps([
-            {"id": "ingest-abc", "status": "pending"}
-        ]))
+        manifest.write_text(json.dumps([{"id": "ingest-abc", "status": "pending"}]))
         cfg = _make_cfg(tmp_path)
 
         result = _tag_candidate(
@@ -403,34 +406,40 @@ class TestTagCandidate:
         (wiki_root / "_meta").mkdir(parents=True)
         (wiki_root / "permanent").mkdir(parents=True)
         (tmp_path / "raw" / "inbox").mkdir(parents=True)
-        (tmp_path / ".kb-config.yml").write_text(
-            "vault_root: .\n"
+        (tmp_path / ".kb-config.yml").write_text("vault_root: .\n")
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(
+            json.dumps(
+                [{"id": "ingest-abc", "source": "url", "type": "web", "file": "raw/web/x.md", "status": "pending"}]
+            )
         )
-        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
-            {"id": "ingest-abc", "source": "url", "type": "web",
-             "file": "raw/web/x.md", "status": "pending"}
-        ]))
 
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, [
-            "compile",
-            "--tag-candidate", "ingest-abc",
-            "--verdict", "yes",
-            "--score", "0.85",
-            "--reason", "good pattern",
-            "--suggested-type", "pattern",
-            "--suggested-tags", "agent-patterns,llm",
-            "--json",
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "compile",
+                "--tag-candidate",
+                "ingest-abc",
+                "--verdict",
+                "yes",
+                "--score",
+                "0.85",
+                "--reason",
+                "good pattern",
+                "--suggested-type",
+                "pattern",
+                "--suggested-tags",
+                "agent-patterns,llm",
+                "--json",
+            ],
+        )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         assert payload["success"] is True
 
-        loaded = json.loads(
-            (tmp_path / "raw" / "inbox" / ".manifest.json").read_text()
-        )
+        loaded = json.loads((tmp_path / "raw" / "inbox" / ".manifest.json").read_text())
         assert loaded[0]["candidate"]["verdict"] == "yes"
         assert loaded[0]["candidate"]["suggested_tags"] == ["agent-patterns", "llm"]
 
@@ -446,21 +455,33 @@ class TestListInboxCandidatesOnly:
         (wiki_root / "_meta").mkdir(parents=True)
         (wiki_root / "permanent").mkdir(parents=True)
         (tmp_path / "raw" / "inbox").mkdir(parents=True)
-        (tmp_path / ".kb-config.yml").write_text(
-            "vault_root: .\n"
+        (tmp_path / ".kb-config.yml").write_text("vault_root: .\n")
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "ingest-yes",
+                        "status": "pending",
+                        "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"},
+                    },
+                    {
+                        "id": "ingest-no",
+                        "status": "pending",
+                        "candidate": {"verdict": "no", "score": 0.05, "reason": "noise"},
+                    },
+                    {
+                        "id": "ingest-maybe",
+                        "status": "pending",
+                        "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"},
+                    },
+                    {"id": "ingest-untagged", "status": "pending"},
+                ]
+            )
         )
-        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
-            {"id": "ingest-yes", "status": "pending",
-             "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"}},
-            {"id": "ingest-no", "status": "pending",
-             "candidate": {"verdict": "no", "score": 0.05, "reason": "noise"}},
-            {"id": "ingest-maybe", "status": "pending",
-             "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"}},
-            {"id": "ingest-untagged", "status": "pending"},
-        ]))
 
         monkeypatch.chdir(tmp_path)
         from llm_wiki.cli import app
+
         runner = CliRunner()
 
         result = runner.invoke(app, ["compile", "--list-inbox", "--candidates-only", "--json"])
@@ -475,23 +496,39 @@ class TestListInboxCandidatesOnly:
         (wiki_root / "_meta").mkdir(parents=True)
         (wiki_root / "permanent").mkdir(parents=True)
         (tmp_path / "raw" / "inbox").mkdir(parents=True)
-        (tmp_path / ".kb-config.yml").write_text(
-            "vault_root: .\n"
+        (tmp_path / ".kb-config.yml").write_text("vault_root: .\n")
+        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "ingest-yes",
+                        "status": "pending",
+                        "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"},
+                    },
+                    {
+                        "id": "ingest-maybe",
+                        "status": "pending",
+                        "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"},
+                    },
+                ]
+            )
         )
-        (tmp_path / "raw" / "inbox" / ".manifest.json").write_text(json.dumps([
-            {"id": "ingest-yes", "status": "pending",
-             "candidate": {"verdict": "yes", "score": 0.9, "reason": "good"}},
-            {"id": "ingest-maybe", "status": "pending",
-             "candidate": {"verdict": "maybe", "score": 0.5, "reason": "borderline"}},
-        ]))
 
         monkeypatch.chdir(tmp_path)
         from llm_wiki.cli import app
+
         runner = CliRunner()
 
-        result = runner.invoke(app, [
-            "compile", "--list-inbox", "--candidates-only", "--include-maybe", "--json",
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "compile",
+                "--list-inbox",
+                "--candidates-only",
+                "--include-maybe",
+                "--json",
+            ],
+        )
 
         assert result.exit_code == 0, result.output
         ids = [e["id"] for e in json.loads(result.stdout)]

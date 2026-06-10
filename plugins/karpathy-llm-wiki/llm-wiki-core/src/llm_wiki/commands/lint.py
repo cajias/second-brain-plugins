@@ -9,17 +9,23 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
-from pathlib import Path
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import typer
 
-from llm_wiki.core.config import load_config, WikiConfig
+from llm_wiki.commands.charts import _generate_all_charts
+from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.frontmatter import REQUIRED_FIELDS, VALID_VALUES, parse_file
 from llm_wiki.core.taxonomy import load_approved_tags
 
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]")
+MAX_TAGS_PER_NOTE = 6
 
 
 # ---------------------------------------------------------------------------
@@ -27,68 +33,69 @@ WIKILINK_PATTERN = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]")
 # ---------------------------------------------------------------------------
 
 
-def _scan_frontmatter(wiki_dir: Path) -> list[dict]:
-    """Scan all permanent notes for frontmatter completeness and validity."""
-    results = []
-    permanent_dir = wiki_dir / "permanent"
-    if not permanent_dir.exists():
-        return results
+def _build_frontmatter_entry(md_file: Path) -> dict[str, Any]:
+    """Build a single frontmatter scan entry for one note file."""
+    try:
+        fm, _ = parse_file(md_file)
+    except (OSError, ValueError, KeyError):
+        fm = None
 
-    for md_file in sorted(permanent_dir.glob("*.md")):
-        try:
-            fm, _ = parse_file(md_file)
-        except Exception:
-            fm = None
+    entry: dict[str, Any] = {
+        "file": md_file.name,
+        "path": str(md_file),
+        "has_frontmatter": bool(fm),
+        "fields_present": [],
+        "fields_missing": [],
+        "tags": [],
+        "invalid_values": {},
+    }
 
-        entry = {
-            "file": md_file.name,
-            "path": str(md_file),
-            "has_frontmatter": bool(fm),
-            "fields_present": [],
-            "fields_missing": [],
-            "tags": [],
-            "invalid_values": {},
+    if not fm:
+        entry["fields_missing"] = REQUIRED_FIELDS[:]
+        return entry
+
+    for field in REQUIRED_FIELDS:
+        if field in fm and fm[field] is not None:
+            entry["fields_present"].append(field)
+        else:
+            entry["fields_missing"].append(field)
+
+    if isinstance(fm.get("tags"), list):
+        entry["tags"] = [str(t) for t in fm["tags"]]
+
+    for field, allowed in VALID_VALUES.items():
+        if field in fm and fm[field] is not None:
+            val = str(fm[field])
+            if val not in allowed:
+                entry["invalid_values"][field] = {
+                    "got": val,
+                    "expected": allowed,
+                }
+
+    if len(entry["tags"]) > MAX_TAGS_PER_NOTE:
+        entry["invalid_values"]["tags"] = {
+            "got": f"{len(entry['tags'])} tags",
+            "expected": f"at most {MAX_TAGS_PER_NOTE}",
         }
 
-        if not fm:
-            entry["fields_missing"] = REQUIRED_FIELDS[:]
-            results.append(entry)
-            continue
-
-        for field in REQUIRED_FIELDS:
-            if field in fm and fm[field] is not None:
-                entry["fields_present"].append(field)
-            else:
-                entry["fields_missing"].append(field)
-
-        if isinstance(fm.get("tags"), list):
-            entry["tags"] = [str(t) for t in fm["tags"]]
-
-        for field, allowed in VALID_VALUES.items():
-            if field in fm and fm[field] is not None:
-                val = str(fm[field])
-                if val not in allowed:
-                    entry["invalid_values"][field] = {
-                        "got": val,
-                        "expected": allowed,
-                    }
-
-        if len(entry["tags"]) > 6:
-            entry["invalid_values"]["tags"] = {
-                "got": f"{len(entry['tags'])} tags",
-                "expected": "at most 6",
-            }
-
-        results.append(entry)
-    return results
+    return entry
 
 
-def _extract_wikilinks(filepath: Path) -> list[dict]:
+def _scan_frontmatter(wiki_dir: Path) -> list[dict[str, Any]]:
+    """Scan all permanent notes for frontmatter completeness and validity."""
+    permanent_dir = wiki_dir / "permanent"
+    if not permanent_dir.exists():
+        return []
+
+    return [_build_frontmatter_entry(md_file) for md_file in sorted(permanent_dir.glob("*.md"))]
+
+
+def _extract_wikilinks(filepath: Path) -> list[dict[str, Any]]:
     """Return list of {target, line} for every [[wikilink]] in the file."""
-    links = []
+    links: list[dict[str, Any]] = []
     try:
         lines_text = filepath.read_text(encoding="utf-8").splitlines()
-    except Exception:
+    except OSError:
         return links
 
     for i, line in enumerate(lines_text, start=1):
@@ -98,11 +105,11 @@ def _extract_wikilinks(filepath: Path) -> list[dict]:
     return links
 
 
-def _build_link_graph(wiki_dir: Path) -> dict:
+def _build_link_graph(wiki_dir: Path) -> dict[str, Any]:
     """Build a wikilink graph for all permanent notes."""
     permanent_dir = wiki_dir / "permanent"
-    nodes: dict[str, dict] = {}
-    all_links: list[dict] = []
+    nodes: dict[str, dict[str, Any]] = {}
+    all_links: list[dict[str, Any]] = []
 
     if not permanent_dir.exists():
         return {"nodes": nodes, "all_links": all_links}
@@ -117,45 +124,40 @@ def _build_link_graph(wiki_dir: Path) -> dict:
         for wl in wikilinks:
             target = wl["target"]
             nodes[source]["links_to"].append(target)
-            all_links.append({
-                "source": md_file.name,
-                "target": target,
-                "line": wl["line"],
-            })
+            all_links.append(
+                {
+                    "source": md_file.name,
+                    "target": target,
+                    "line": wl["line"],
+                }
+            )
             if target in nodes:
                 nodes[target]["linked_from"].append(source)
 
     return {"nodes": nodes, "all_links": all_links}
 
 
-def _find_orphans(graph: dict) -> list[str]:
+def _find_orphans(graph: dict[str, Any]) -> list[str]:
     """Find notes with zero inlinks."""
-    orphans = []
-    for name, data in graph["nodes"].items():
-        if len(data["linked_from"]) == 0:
-            orphans.append(name)
+    orphans = [name for name, data in graph["nodes"].items() if len(data["linked_from"]) == 0]
     return sorted(orphans)
 
 
-def _find_broken_links(graph: dict, wiki_dir: Path) -> list[dict]:
+def _find_broken_links(graph: dict[str, Any], wiki_dir: Path) -> list[dict[str, Any]]:
     """Find wikilinks that point to non-existent files."""
     permanent_dir = wiki_dir / "permanent"
-    existing = set()
+    existing: set[str] = set()
     if permanent_dir.exists():
         existing = {f.stem for f in permanent_dir.glob("*.md")}
 
-    broken = []
-    for link in graph["all_links"]:
-        if link["target"] not in existing:
-            broken.append(link)
-    return broken
+    return [link for link in graph["all_links"] if link["target"] not in existing]
 
 
-def _check_tag_compliance(wiki_dir: Path, root: Path) -> dict:
+def _check_tag_compliance(wiki_dir: Path, root: Path) -> dict[str, Any]:
     """Check all notes' tags against the approved taxonomy."""
     taxonomy_path = root / "wiki" / "_meta" / "tag-taxonomy.md"
     approved = load_approved_tags(taxonomy_path)
-    result = {
+    result: dict[str, Any] = {
         "approved_tags": approved or [],
         "taxonomy_found": approved is not None,
         "rogue": [],
@@ -174,7 +176,7 @@ def _check_tag_compliance(wiki_dir: Path, root: Path) -> dict:
     for md_file in sorted(permanent_dir.glob("*.md")):
         try:
             fm, _ = parse_file(md_file)
-        except Exception:
+        except (OSError, ValueError, KeyError):
             continue
 
         tags = fm.get("tags", [])
@@ -189,11 +191,13 @@ def _check_tag_compliance(wiki_dir: Path, root: Path) -> dict:
         else:
             result["compliant"].append({"file": md_file.name, "tags": tags})
 
-        if len(tags) > 6:
-            result["over_limit"].append({
-                "file": md_file.name,
-                "count": len(tags),
-            })
+        if len(tags) > MAX_TAGS_PER_NOTE:
+            result["over_limit"].append(
+                {
+                    "file": md_file.name,
+                    "count": len(tags),
+                }
+            )
 
     return result
 
@@ -203,7 +207,7 @@ def _check_tag_compliance(wiki_dir: Path, root: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _run_all_checks(cfg: WikiConfig) -> dict:
+def _run_all_checks(cfg: WikiConfig) -> dict[str, Any]:
     """Run all lint checks and return structured results."""
     wiki_dir = cfg.project_root / "wiki"
 
@@ -217,7 +221,7 @@ def _run_all_checks(cfg: WikiConfig) -> dict:
     note_count = len(list(permanent_dir.glob("*.md"))) if permanent_dir.exists() else 0
 
     return {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "note_count": note_count,
         "frontmatter": frontmatter,
         "link_graph": {
@@ -237,6 +241,86 @@ def _run_all_checks(cfg: WikiConfig) -> dict:
     }
 
 
+def _empty_lint_result() -> dict[str, Any]:
+    """Build the lint result payload for a missing wiki directory."""
+    return {
+        "error": None,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "note_count": 0,
+        "frontmatter": [],
+        "link_graph": {"node_count": 0, "edge_count": 0, "nodes": {}},
+        "orphans": [],
+        "broken_links": [],
+        "tag_compliance": {
+            "approved_tags": [],
+            "taxonomy_found": False,
+            "rogue": [],
+            "compliant": [],
+            "over_limit": [],
+        },
+        "message": "Wiki directory not found. Nothing to lint.",
+    }
+
+
+def _print_frontmatter_issues(fm_issues: list[dict[str, Any]]) -> None:
+    """Print the frontmatter-issues section of the lint report."""
+    if not fm_issues:
+        return
+    typer.echo(f"\nFrontmatter issues ({len(fm_issues)}):")
+    for f in fm_issues:
+        typer.echo(f"  {f['file']}:")
+        if f["fields_missing"]:
+            typer.echo(f"    missing: {', '.join(f['fields_missing'])}")
+        if f["invalid_values"]:
+            for field, detail in f["invalid_values"].items():
+                typer.echo(f"    invalid {field}: {detail['got']}")
+
+
+def _print_orphans_and_links(results: dict[str, Any]) -> None:
+    """Print orphan and broken-link sections."""
+    if results["orphans"]:
+        typer.echo(f"\nOrphans ({len(results['orphans'])}):")
+        for o in results["orphans"]:
+            typer.echo(f"  - {o}")
+    if results["broken_links"]:
+        typer.echo(f"\nBroken links ({len(results['broken_links'])}):")
+        for bl in results["broken_links"]:
+            typer.echo(f"  {bl['source']}:{bl['line']} -> [[{bl['target']}]]")
+
+
+def _print_tag_compliance(tc: dict[str, Any]) -> None:
+    """Print rogue-tag and over-limit sections of the lint report."""
+    if tc["rogue"]:
+        typer.echo(f"\nRogue tags ({len(tc['rogue'])}):")
+        for r in tc["rogue"]:
+            typer.echo(f"  {r['file']}: {r['tag']}")
+    if tc["over_limit"]:
+        typer.echo("\nOver tag limit:")
+        for ol in tc["over_limit"]:
+            typer.echo(f"  {ol['file']}: {ol['count']} tags")
+
+
+def _print_lint_summary(results: dict[str, Any]) -> None:
+    """Render the human-readable lint report to stdout."""
+    typer.echo(f"\nKB Lint Report ({results['timestamp'][:19]})")
+    typer.echo(f"{'=' * 50}\n")
+    typer.echo(f"Total notes: {results['note_count']}")
+    typer.echo(f"Link graph: {results['link_graph']['node_count']} nodes, {results['link_graph']['edge_count']} edges")
+
+    fm_issues = [f for f in results["frontmatter"] if f["fields_missing"] or f["invalid_values"]]
+    tc = results["tag_compliance"]
+
+    _print_frontmatter_issues(fm_issues)
+    _print_orphans_and_links(results)
+    _print_tag_compliance(tc)
+
+    issue_count = len(fm_issues) + len(results["broken_links"]) + len(tc["rogue"])
+    if issue_count == 0:
+        typer.echo("\nAll checks passed.")
+    else:
+        typer.echo(f"\n{issue_count} issue(s) found.")
+
+
 # ---------------------------------------------------------------------------
 # Typer command
 # ---------------------------------------------------------------------------
@@ -244,10 +328,15 @@ def _run_all_checks(cfg: WikiConfig) -> dict:
 
 def lint(
     json_output: bool = typer.Option(
-        False, "--json", "-j", help="Output all checks as JSON.",
+        False,
+        "--json",
+        "-j",
+        help="Output all checks as JSON.",
     ),
     fix: bool = typer.Option(
-        False, "--fix", help="Auto-fix issues where possible.",
+        False,
+        "--fix",
+        help="Auto-fix issues where possible.",
     ),
 ) -> None:
     """Run health checks on the wiki.
@@ -258,27 +347,11 @@ def lint(
         cfg = load_config()
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     wiki_dir = cfg.project_root / "wiki"
     if not wiki_dir.exists():
-        empty_result = {
-            "error": None,
-            "timestamp": datetime.now().isoformat(),
-            "note_count": 0,
-            "frontmatter": [],
-            "link_graph": {"node_count": 0, "edge_count": 0, "nodes": {}},
-            "orphans": [],
-            "broken_links": [],
-            "tag_compliance": {
-                "approved_tags": [],
-                "taxonomy_found": False,
-                "rogue": [],
-                "compliant": [],
-                "over_limit": [],
-            },
-            "message": "Wiki directory not found. Nothing to lint.",
-        }
+        empty_result = _empty_lint_result()
         if json_output:
             typer.echo(json.dumps(empty_result, indent=2))
         else:
@@ -290,55 +363,7 @@ def lint(
     if json_output:
         typer.echo(json.dumps(results, indent=2))
     else:
-        # Human-readable summary
-        typer.echo(f"\nKB Lint Report ({results['timestamp'][:19]})")
-        typer.echo(f"{'=' * 50}\n")
-        typer.echo(f"Total notes: {results['note_count']}")
-        typer.echo(f"Link graph: {results['link_graph']['node_count']} nodes, "
-                    f"{results['link_graph']['edge_count']} edges")
-
-        # Frontmatter issues
-        fm_issues = [f for f in results["frontmatter"] if f["fields_missing"] or f["invalid_values"]]
-        if fm_issues:
-            typer.echo(f"\nFrontmatter issues ({len(fm_issues)}):")
-            for f in fm_issues:
-                typer.echo(f"  {f['file']}:")
-                if f["fields_missing"]:
-                    typer.echo(f"    missing: {', '.join(f['fields_missing'])}")
-                if f["invalid_values"]:
-                    for field, detail in f["invalid_values"].items():
-                        typer.echo(f"    invalid {field}: {detail['got']}")
-
-        # Orphans
-        if results["orphans"]:
-            typer.echo(f"\nOrphans ({len(results['orphans'])}):")
-            for o in results["orphans"]:
-                typer.echo(f"  - {o}")
-
-        # Broken links
-        if results["broken_links"]:
-            typer.echo(f"\nBroken links ({len(results['broken_links'])}):")
-            for bl in results["broken_links"]:
-                typer.echo(f"  {bl['source']}:{bl['line']} -> [[{bl['target']}]]")
-
-        # Tag compliance
-        tc = results["tag_compliance"]
-        if tc["rogue"]:
-            typer.echo(f"\nRogue tags ({len(tc['rogue'])}):")
-            for r in tc["rogue"]:
-                typer.echo(f"  {r['file']}: {r['tag']}")
-
-        if tc["over_limit"]:
-            typer.echo(f"\nOver tag limit:")
-            for ol in tc["over_limit"]:
-                typer.echo(f"  {ol['file']}: {ol['count']} tags")
-
-        # Summary
-        issue_count = len(fm_issues) + len(results["broken_links"]) + len(tc["rogue"])
-        if issue_count == 0:
-            typer.echo("\nAll checks passed.")
-        else:
-            typer.echo(f"\n{issue_count} issue(s) found.")
+        _print_lint_summary(results)
 
     # Auto-refresh charts after lint --fix
     if fix:
@@ -346,9 +371,8 @@ def lint(
 
 
 def _auto_refresh_charts(cfg: WikiConfig) -> None:
-    """Run chart generation after lint fixes."""
+    """Run chart generation after lint fixes (best-effort)."""
     try:
-        from llm_wiki.commands.charts import _generate_all_charts
         _generate_all_charts(cfg)
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001  # best-effort cosmetic refresh; convention permits logged catch-all
+        typer.echo(f"Warning: chart refresh failed: {e}", err=True)

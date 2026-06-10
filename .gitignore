@@ -7,3 +7,11 @@ dist/
 build/
 .venv/
 .kb-venv/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+pytest-of-*/
+pytest-current
+uv-*.lock
+.envrc

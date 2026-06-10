@@ -9,14 +9,19 @@ All other modules use get_project_root() and load_config() from here.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 import yaml
 
 
 CONFIG_FILENAME = ".kb-config.yml"
+ENV_ROOT = "KARPATHY_WIKI_ROOT"
+
+# Maximum number of parent directories to walk when searching for the config file.
+_MAX_PARENT_WALK = 20
 
 
 @dataclass
@@ -47,7 +52,7 @@ class WikiConfig:
     lint_index_min_coverage_pct: int
     query_default_limit: int
     # Keep the raw dict for backward-compat access
-    _raw: dict = field(default_factory=dict, repr=False)
+    _raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def get_path(self, key: str) -> Path:
         """Resolve a path key to an absolute path relative to project root.
@@ -63,45 +68,63 @@ class WikiConfig:
 
         # Walk the raw config dict
         parts = key.split(".")
-        node = self._raw
+        node: Any = self._raw
         for part in parts:
             if isinstance(node, dict) and part in node:
                 node = node[part]
             else:
-                raise KeyError(f"Config key not found: {key}")
+                msg = f"Config key not found: {key}"
+                raise KeyError(msg)
         return self.project_root / str(node)
 
 
-def get_project_root(start: Optional[Path] = None) -> Path:
-    """Walk up from start (default: cwd) looking for .kb-config.yml.
+def get_project_root(start: Path | None = None) -> Path:
+    """Find the wiki project root.
+
+    Resolution order:
+      1. Explicit ``start`` argument
+      2. ``KARPATHY_WIKI_ROOT`` environment variable
+      3. Walk up from cwd looking for .kb-config.yml
 
     Args:
-        start: Directory to start searching from. Defaults to cwd.
+        start: Directory to start searching from. If provided, skips the
+               environment variable check.
 
     Returns:
         Path to the project root directory containing .kb-config.yml.
 
     Raises:
-        FileNotFoundError: If no .kb-config.yml is found within 20 parent levels.
+        FileNotFoundError: If no .kb-config.yml is found.
     """
+    if start is None:
+        env_root = os.environ.get(ENV_ROOT)
+        if env_root:
+            candidate = Path(env_root).resolve()
+            if (candidate / CONFIG_FILENAME).exists():
+                return candidate
+            msg = f"{ENV_ROOT}={env_root} does not contain {CONFIG_FILENAME}."
+            raise FileNotFoundError(msg)
+
     current = Path(start) if start else Path.cwd()
     current = current.resolve()
 
-    for _ in range(20):
+    for _ in range(_MAX_PARENT_WALK):
         if (current / CONFIG_FILENAME).exists():
             return current
         parent = current.parent
         if parent == current:
-            break  # Reached filesystem root
+            break
         current = parent
 
-    raise FileNotFoundError(
+    msg = (
         f"Cannot find {CONFIG_FILENAME}. "
-        "Run 'kb init' to create a new knowledge base, or cd into a wiki directory."
+        f"Run 'kb init' to create a new knowledge base, set {ENV_ROOT}, "
+        "or cd into a wiki directory."
     )
+    raise FileNotFoundError(msg)
 
 
-def load_raw_config(root: Path) -> dict:
+def load_raw_config(root: Path) -> dict[str, Any]:
     """Load the raw YAML config as a dict.
 
     Args:
@@ -112,19 +135,21 @@ def load_raw_config(root: Path) -> dict:
 
     Raises:
         FileNotFoundError: If .kb-config.yml is not found.
-        ValueError: If the config file is malformed.
+        ValueError: If the config file is malformed (not a YAML mapping).
     """
     config_path = root / CONFIG_FILENAME
     if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found at {config_path}")
-    with open(config_path, "r", encoding="utf-8") as f:
+        msg = f"Config file not found at {config_path}"
+        raise FileNotFoundError(msg)
+    with config_path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
-        raise ValueError(f"Malformed config file: expected a YAML mapping, got {type(data).__name__}")
+        msg = f"Malformed config file: expected a YAML mapping, got {type(data).__name__}"
+        raise ValueError(msg)  # noqa: TRY004  # contract: tests assert ValueError
     return data
 
 
-def load_config(root: Optional[Path] = None) -> WikiConfig:
+def load_config(root: Path | None = None) -> WikiConfig:
     """Load wiki configuration from .kb-config.yml.
 
     Args:

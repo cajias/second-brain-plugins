@@ -10,12 +10,16 @@ It also supports --fix for auto-repair.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pytest
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 runner = CliRunner()
 
@@ -29,7 +33,7 @@ def _lint(wiki_root: Path, *extra_args, monkeypatch=None) -> object:
     """Run ``kb lint`` with cwd set to wiki_root."""
     if monkeypatch:
         monkeypatch.chdir(wiki_root)
-    return runner.invoke(app, ["lint"] + list(extra_args))
+    return runner.invoke(app, ["lint", *extra_args])
 
 
 def _lint_json(wiki_root: Path, monkeypatch) -> dict:

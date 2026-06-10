@@ -17,10 +17,9 @@
 <p align="center"><em>Claude Code plugins for personal knowledge management</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/languages/top/cajias/second-brain-plugins?style=for-the-badge" alt="Language">
-  <a href="https://github.com/cajias/second-brain-plugins/blob/main/LICENSE"><img src="https://img.shields.io/github/license/cajias/second-brain-plugins?style=for-the-badge" alt="License"></a>
-  <a href="https://github.com/cajias/second-brain-plugins/stargazers"><img src="https://img.shields.io/github/stars/cajias/second-brain-plugins?style=for-the-badge" alt="Stars"></a>
   <img src="https://img.shields.io/badge/Claude%20Code-plugin-E879F9?style=for-the-badge" alt="Claude Code plugin">
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
 </p>
 
 **A collection of [Claude Code](https://claude.ai/code) plugins that turn scattered notes, papers, and conversations into a structured, searchable, interconnected knowledge graph.** Each plugin is a self-contained personal-knowledge-management system with its own commands, agents, skills, and Python CLI — with Claude doing the heavy lifting of ingesting, compiling, and linking your second brain.
@@ -28,16 +27,17 @@
 <table>
 <tr><td><b>Karpathy-style wiki</b></td><td>The <a href="plugins/karpathy-llm-wiki/"><code>karpathy-llm-wiki</code></a> plugin ingests files, compiles them into atomic permanent notes, and maintains a semantic knowledge base.</td></tr>
 <tr><td><b>Semantic search</b></td><td>A local <a href="https://lancedb.github.io/lancedb/">LanceDB</a> vector index over <code>sentence-transformers</code> embeddings — query your notes by meaning, not keywords.</td></tr>
-<tr><td><b>Ingest anything</b></td><td>Pull in Markdown, raw text, or PDFs (via <code>pypdf</code>) into a staging inbox, then compile the best material into the permanent wiki.</td></tr>
-<tr><td><b>Health &amp; analytics</b></td><td><code>kb lint</code> reports schema and link health; <code>kb charts</code> auto-generates tag-distribution, growth, and knowledge-type plots from the live vault.</td></tr>
+<tr><td><b>Ingest anything</b></td><td>Pull in Markdown, raw text, or PDFs (via <a href="https://github.com/datalab-to/marker">Marker</a>, opt-in <code>[pdf]</code> extra) into a staging inbox, then compile the best material into the permanent wiki.</td></tr>
+<tr><td><b>Health &amp; analytics</b></td><td><code>kb lint</code> and <code>/kb-health</code> report schema, link, and staleness health; <code>kb charts</code> auto-generates tag-distribution, growth, and knowledge-type plots from the live vault.</td></tr>
 <tr><td><b>Scheduled maintenance</b></td><td><code>kb maintenance enable</code> installs cron jobs to incrementally re-index, lint, and regenerate charts on a nightly/weekly cadence.</td></tr>
-<tr><td><b>Slash commands + CLI</b></td><td>Drive everything from Claude Code (<code>/kb-init</code>, <code>/kb-ingest</code>, <code>/kb-compile</code>, <code>/kb-query</code>, …) or from the standalone <code>kb</code> Python CLI.</td></tr>
+<tr><td><b>Auto-lint &amp; auto-index hooks</b></td><td>Plugin ships a <code>PostToolUse</code> hook that lints and incrementally re-indexes whenever Claude edits a permanent note — no manual <code>kb index</code> needed.</td></tr>
+<tr><td><b>Slash commands + CLI</b></td><td>Drive everything from Claude Code (<code>/kb-init</code>, <code>/kb-ingest</code>, <code>/kb-compile</code>, <code>/kb-query</code>, <code>/kb-health</code>, …) or from the standalone <code>kb</code> Python CLI.</td></tr>
 </table>
 
 ## Available plugins
 
-| Plugin | Description |
-|--------|-------------|
+| Plugin                                          | Description                                                                                     |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [karpathy-llm-wiki](plugins/karpathy-llm-wiki/) | Karpathy-style knowledge wiki — ingest, compile, search, and maintain a semantic knowledge base |
 
 ## Installation
@@ -47,11 +47,11 @@
 Add this repo as a marketplace, then install the plugin:
 
 ```bash
-claude plugin marketplace add cajias/second-brain-plugins
+claude plugin marketplace add https://code.aws.dev/proserve/product-and-solutions/tools/knowledge-management/second-brain-plugins
 claude plugin install karpathy-llm-wiki@second-brain-plugins
 ```
 
-The plugin registers slash commands (`/kb-init`, `/kb-ingest`, `/kb-compile`, `/kb-query`, `/kb-index`, `/kb-lint`, `/kb-test`) for use directly inside Claude Code.
+The plugin registers slash commands (`/kb-init`, `/kb-ingest`, `/kb-compile`, `/kb-query`, `/kb-index`, `/kb-lint`, `/kb-health`, `/kb-test`) for use directly inside Claude Code.
 
 ### As a standalone CLI
 
@@ -59,9 +59,11 @@ The wiki engine ships as a Python package (`kb`) you can run without Claude Code
 
 ```bash
 cd plugins/karpathy-llm-wiki/llm-wiki-core
-uv sync --all-extras
+uv sync --all-extras           # includes the [pdf] extra (Marker)
 uv run kb --help
 ```
+
+If you don't need PDF ingest, drop `--all-extras` for a lighter install.
 
 ## Usage
 
@@ -76,6 +78,9 @@ cd ~/my-wiki
 /kb-ingest file paper.pdf
 /kb-compile
 /kb-query "What patterns exist for X?"
+
+# Audit & maintain
+/kb-health           # comprehensive audit (staleness, gaps, orphans, link suggestions)
 ```
 
 ### From the CLI
@@ -92,6 +97,17 @@ kb index --full
 kb search "configure a struct without breaking the API" --limit 3
 ```
 
+#### Location-independent CLI
+
+Set `KARPATHY_WIKI_ROOT` to point at your wiki and you can invoke `kb` from anywhere — no need to `cd` into the wiki first:
+
+```bash
+export KARPATHY_WIKI_ROOT=~/my-wiki
+kb search "authentication patterns"   # works from any directory
+```
+
+The CLI resolves the wiki root in this order: `--root` flag → `KARPATHY_WIKI_ROOT` env var → walk up from cwd looking for `.kb-config.yml`.
+
 ### Demo
 
 The end-to-end shell flow — `init → ingest → compile → index → search`:
@@ -105,16 +121,19 @@ _The demo is fully reproducible: from the repo root, run `vhs docs/demos/karpath
 Captured from a real wiki of 66 notes — all four charts are auto-generated by `kb charts`, no mockups:
 
 | ![Tag distribution](docs/demos/screenshots/tag-distribution.png) | ![Knowledge types](docs/demos/screenshots/knowledge-type-distribution.png) |
-|:--:|:--:|
-| **Tag distribution** — note counts per tag | **Knowledge types** — types observed in this vault |
-| ![Growth over time](docs/demos/screenshots/growth-over-time.png) | ![Health summary](docs/demos/screenshots/health-summary.png) |
-| **Growth over time** — note-creation cadence | **Health summary** — vault size and composition |
+| :--------------------------------------------------------------: | :------------------------------------------------------------------------: |
+|            **Tag distribution** — note counts per tag            |             **Knowledge types** — types observed in this vault             |
+| ![Growth over time](docs/demos/screenshots/growth-over-time.png) |        ![Health summary](docs/demos/screenshots/health-summary.png)        |
+|           **Growth over time** — note-creation cadence           |              **Health summary** — vault size and composition               |
 
 See [`docs/demos/screenshots/`](docs/demos/screenshots/) for the full set and a sample [auto-generated stats dashboard](docs/demos/screenshots/example-stats-dashboard.md).
 
 ## Configuration
 
 - **Scheduled maintenance** — `kb maintenance enable` installs cron jobs (nightly incremental index, weekly lint report, weekly chart regeneration); `kb maintenance status` and `kb maintenance disable` manage them. Pass `--json` for machine-readable output.
+- **PDF ingest (opt-in)** — install the `[pdf]` extra (`uv sync --all-extras`) to enable PDF extraction via [Marker](https://github.com/datalab-to/marker), which preserves equations, tables, and structure better than naive text extraction.
+- **Auto-maintenance hooks** — the plugin ships a `PostToolUse` hook (`hooks/hooks.json`) that runs `lint-and-index.sh` whenever Claude edits or writes a permanent note. The hook lints the touched file and triggers an incremental `kb index` — your vector index stays current without manual reindexing.
+- **Wiki location** — `KARPATHY_WIKI_ROOT` env var lets the CLI work from any cwd.
 - **Embeddings cache** — set the standard Hugging Face environment variables (`HF_HUB_DISABLE_PROGRESS_BARS`, `TRANSFORMERS_VERBOSITY`, `TOKENIZERS_PARALLELISM`) to quiet model downloads, as the demo tape does.
 
 ## How it works
@@ -125,8 +144,9 @@ Each plugin is self-contained under `plugins/<name>/`:
 plugins/karpathy-llm-wiki/
 ├── .claude-plugin/plugin.json   # Claude Code manifest
 ├── commands/                    # slash commands (/kb-*)
-├── agents/                      # compile, wikilink, gap-research, quality-review
+├── agents/                      # compile, wikilink, gap-research, quality-review, wiki-health
 ├── skills/                      # search-and-link, lint-and-repair, gap-analysis, compile-note
+├── hooks/                       # post-edit lint-and-index hook
 └── llm-wiki-core/               # Python engine (the `kb` CLI)
     ├── src/llm_wiki/            # commands: init/ingest/compile/search/index/lint/charts
     └── tests/                   # pytest suite

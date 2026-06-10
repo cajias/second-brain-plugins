@@ -6,10 +6,20 @@ cosine similarity of embeddings.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from llm_wiki.core.embeddings import search_index
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+# Cosine-similarity tiers (see CLAUDE.md "Deduplication Thresholds").
+# Default `threshold` for "duplicate" classification is the function arg (0.92);
+# the constants below are the lower bounds for "similar" and "noteworthy match".
+SIMILAR_SCORE_THRESHOLD = 0.80
+MATCH_DISPLAY_THRESHOLD = 0.50
 
 
 def check_duplicate(
@@ -34,7 +44,7 @@ def check_duplicate(
     """
     try:
         results = search_index(db_path, table_name, query, limit=5)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # any backend failure → fall back to "unique"
         return {
             "status": "unique",
             "message": f"No index available ({e}). Treating as unique.",
@@ -58,12 +68,12 @@ def check_duplicate(
             "snippet": r["snippet"][:150],
         }
         for r in results
-        if r["score"] >= 0.50
+        if r["score"] >= MATCH_DISPLAY_THRESHOLD
     ]
 
     if top_score >= threshold:
         status = "duplicate"
-    elif top_score >= 0.80:
+    elif top_score >= SIMILAR_SCORE_THRESHOLD:
         status = "similar"
     else:
         status = "unique"
