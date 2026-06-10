@@ -7,7 +7,6 @@ notes that are semantically similar to the query.
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 import typer
 
@@ -17,11 +16,17 @@ from llm_wiki.core.embeddings import search_index
 
 def search(
     query: str = typer.Argument(..., help="Search query string."),
-    limit: Optional[int] = typer.Option(
-        None, "--limit", "-l", help="Maximum number of results (default from config).",
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        "-l",
+        help="Maximum number of results (default from config).",
     ),
     json_output: bool = typer.Option(
-        False, "--json", "-j", help="Output results as JSON.",
+        False,
+        "--json",
+        "-j",
+        help="Output results as JSON.",
     ),
 ) -> None:
     """Semantic search across wiki notes."""
@@ -29,7 +34,7 @@ def search(
         cfg = load_config()
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     if limit is None:
         limit = cfg.query_default_limit
@@ -38,10 +43,10 @@ def search(
         results = search_index(cfg.db_path, cfg.table_name, query, limit=limit)
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
-    except Exception as e:
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # surface any backend error to the user, then exit
         typer.echo(f"Search failed: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     if json_output:
         typer.echo(json.dumps(results, indent=2))

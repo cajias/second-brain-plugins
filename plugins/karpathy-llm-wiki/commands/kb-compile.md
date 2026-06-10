@@ -6,11 +6,14 @@ description: Compile raw documents into atomic wiki notes
 
 You are the knowledge compiler. Your job is to read raw documents from the inbox, extract atomic ideas, check for duplicates, and create permanent wiki notes. This is the core of the Karpathy workflow -- raw input becomes structured, interlinked knowledge.
 
+> **Skills used**: Invoke `compile-note` for extraction/dedup/writing. Invoke `search-and-link` for finding wikilink targets.
+
 ## Step 1: Parse arguments
 
 The user's input is: `$ARGUMENTS`
 
 Extract:
+
 - **--batch N**: Process only N items from the inbox (default: all pending)
 - **--dry-run**: Preview what notes would be created without writing anything
 - No flags: process all pending inbox items
@@ -29,9 +32,60 @@ If the inbox is empty, tell the user: "Inbox is empty. Use `/kb-ingest` to add r
 
 If `--batch N` was specified, take only the first N pending items.
 
+## Step 2.5: Decide single-pass vs two-pass
+
+Count the pending items. If **fewer than 50**, use single-pass: skip directly to Step 3.
+
+If **50 or more pending items**, run a **pre-filter pass first**. The yield rate on saturated chat corpora is ~1% if you extract from every entry; pre-filtering lifts effective yield to ~15-20% on the entries you actually extract from. This saves tokens and produces better notes.
+
+### Pre-filter pass (Pass 1)
+
+For each pending item:
+
+1. **Read the raw file** (the `file` field).
+2. **Skim only** -- do not extract. Decide one of three verdicts:
+   - **`yes`**: contains a concrete, durable, generalizable insight worth a permanent note (specific pattern, decision rationale, surprising fact, reusable design).
+   - **`no`**: personal/household, ephemeral Q&A, recipe lookup, role-play, image-gen prompt, "look at this file" opener, conversation winding-down.
+   - **`maybe`**: borderline -- might be useful but uncertain. The second pass can spot-check these if budget allows.
+3. **Tag the verdict on the manifest** with `kb compile --tag-candidate`:
+
+   ```bash
+   kb compile --tag-candidate <ingest-id> \
+       --verdict yes \
+       --score 0.85 \
+       --reason "specific pattern with measurable result" \
+       --suggested-type pattern \
+       --suggested-tags "agent-patterns,llm"
+   ```
+
+   Flags:
+   - `--verdict`: `yes`, `no`, or `maybe`
+   - `--score`: confidence 0.0-1.0 that this entry is worth extracting
+   - `--reason`: short note explaining the verdict (helps audit later)
+   - `--suggested-type`: knowledge_type hint for Pass 2 (fact, pattern, decision, correction, idea, design, exploration)
+   - `--suggested-tags`: comma-separated taxonomy tags hinting Pass 2's direction
+
+4. The pass-1 prompt to yourself per entry should be **under 30 seconds of attention** -- quick skim, not deep read. The whole point is cheapness.
+
+### Extract pass (Pass 2)
+
+After pass 1 completes, fetch only the keepers:
+
+```bash
+kb compile --list-inbox --candidates-only --json
+```
+
+The `--candidates-only` flag filters to entries previously tagged `verdict=yes`. Process those entries in Step 3 using the **`suggested_type`** and **`suggested_tags`** from the candidate metadata as a starting hint (not a constraint -- your full read may reveal a better type/tags).
+
+If pass-1 yield was unusually low (<10% verdict=yes on a corpus you expected to be richer), re-run with `--include-maybe` to spot-check the borderline set:
+
+```bash
+kb compile --list-inbox --candidates-only --include-maybe --json
+```
+
 ## Step 3: Process each pending item
 
-For each pending item in the inbox:
+For each pending item in the inbox (or each candidate from Pass 2):
 
 ### 3a. Read the raw document
 
@@ -40,6 +94,7 @@ Read the full content of the raw file (the `file` field from the manifest entry)
 ### 3b. Extract atomic ideas
 
 Analyze the raw document and extract atomic ideas. Each idea should be:
+
 - **One concept per note** -- if an idea has sub-parts, split them
 - **Self-contained** -- understandable without reading the source document
 - **Titled descriptively** -- the title should capture the core claim or pattern
@@ -47,11 +102,14 @@ Analyze the raw document and extract atomic ideas. Each idea should be:
 A single raw document might produce 1-5 atomic notes depending on its density.
 
 For each atomic idea, determine:
+
 - **title**: A clear, descriptive title (will become the filename slug)
 - **knowledge_type**: One of: fact, pattern, decision, correction, idea, design, exploration
 - **tags**: Up to 6 from the approved taxonomy (architecture, testing, security, performance, api-design, authentication, observability, databases, distributed-systems, devops, frontend, llm, agent-patterns, code-quality, documentation, error-handling, data-modeling)
 - **confidence**: high, medium, or low
 - **body**: The note content in markdown, using [[wikilinks]] to reference existing notes where relevant
+
+> **If the entry came from a Pass 1 candidate**: the manifest's `suggested_type` and `suggested_tags` are useful starting hints. Treat them as a default, but override freely once you've done the full read -- the deeper read may surface a better fit.
 
 ### 3c. Check for duplicates
 
@@ -62,6 +120,7 @@ kb compile --check-dedup "TITLE OR KEY PHRASE" --json
 ```
 
 Interpret the result:
+
 - **`status: "unique"` (score < 0.80)**: Proceed to write the note
 - **`status: "similar"` (score 0.80-0.91)**: Flag it. Show the user the similar note(s) and ask whether to proceed, merge, or skip. If using `--dry-run`, just note it as "flagged for review".
 - **`status: "duplicate"` (score >= 0.92)**: Skip it. Report that it's a duplicate of the matching note.
@@ -158,6 +217,11 @@ Present a summary:
 - Run `/kb-query` to search across the updated wiki
 ```
 
+If you ran a two-pass workflow, also report:
+
+- Pass 1 verdicts: N yes / N maybe / N no
+- Pass 2 yield: notes-created / yes-candidates (effective extraction rate)
+
 ## Wikilink Guidelines
 
 When writing note bodies, add [[wikilinks]] to connect to existing notes. To find relevant notes for linking:
@@ -175,3 +239,4 @@ Use the filenames (without `.md`) from the search results as wikilinks: `[[filen
 - Tag taxonomy is available via `kb lint --tags` or in the wiki's `_meta/tag-taxonomy.md`. Only use approved tags.
 - Knowledge types: fact, pattern, decision, correction, idea, design, exploration.
 - Scope is always "universal" unless the content is clearly project-specific or time-bound.
+- For inboxes with **50+ pending items**, always run the two-pass pre-filter (Step 2.5) -- it dramatically improves token efficiency and note quality.

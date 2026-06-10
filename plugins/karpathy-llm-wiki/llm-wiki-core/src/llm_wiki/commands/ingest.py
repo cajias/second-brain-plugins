@@ -12,17 +12,25 @@ import json
 import re
 import shutil
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Optional
-from urllib.parse import urlparse
+from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import typer
 
-from llm_wiki.core.config import load_config, get_project_root, WikiConfig
+from llm_wiki.core.config import WikiConfig, load_config
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_VALID_MODES = ("session", "file", "url", "text")
+_ALLOWED_URL_SCHEMES = {"http", "https"}
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +40,7 @@ from llm_wiki.core.config import load_config, get_project_root, WikiConfig
 
 def _timestamp() -> str:
     """Return an ISO-8601 timestamp in UTC."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _short_id() -> str:
@@ -69,20 +77,20 @@ def _html_to_text(html: str) -> str:
     return extractor.get_text()
 
 
-_marker_models: dict | None = None
+_marker_models: dict[str, Any] | None = None
 
 
 def _extract_pdf(pdf_path: Path) -> str:
     """Extract markdown text from a PDF using Marker."""
     global _marker_models  # noqa: PLW0603
     try:
+        # marker is an optional [pdf] extra — must stay lazy.
         from marker.converters.pdf import PdfConverter  # noqa: PLC0415
         from marker.models import create_model_dict  # noqa: PLC0415
         from marker.output import text_from_rendered  # noqa: PLC0415
     except ImportError as e:
-        raise RuntimeError(
-            "PDF extraction requires marker-pdf: pip install karpathy-llm-wiki[pdf]"
-        ) from e
+        msg = "PDF extraction requires marker-pdf: pip install karpathy-llm-wiki[pdf]"
+        raise RuntimeError(msg) from e
 
     try:
         if _marker_models is None:
@@ -91,9 +99,10 @@ def _extract_pdf(pdf_path: Path) -> str:
         rendered = converter(str(pdf_path))
         text, _, _ = text_from_rendered(rendered)
     except Exception as e:
-        raise RuntimeError(f"Failed to extract text from {pdf_path.name}: {e}") from e
+        msg = f"Failed to extract text from {pdf_path.name}: {e}"
+        raise RuntimeError(msg) from e
 
-    return text
+    return str(text)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +110,7 @@ def _extract_pdf(pdf_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _load_manifest(path: Path) -> list:
+def _load_manifest(path: Path) -> list[dict[str, Any]]:
     """Load the manifest, returning an empty list on any error."""
     if not path.exists():
         return []
@@ -114,11 +123,11 @@ def _load_manifest(path: Path) -> list:
     return []
 
 
-def _save_manifest(path: Path, entries: list) -> None:
+def _save_manifest(path: Path, entries: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
-def _append_manifest(cfg: WikiConfig, entry: dict) -> None:
+def _append_manifest(cfg: WikiConfig, entry: dict[str, Any]) -> None:
     """Append an entry to the manifest queue."""
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
     mp = cfg.raw_inbox / ".manifest.json"
@@ -127,7 +136,7 @@ def _append_manifest(cfg: WikiConfig, entry: dict) -> None:
     _save_manifest(mp, entries)
 
 
-def _write_meta(dest_path: Path, meta: dict) -> Path:
+def _write_meta(dest_path: Path, meta: dict[str, Any]) -> Path:
     """Write a .meta.json sidecar next to dest_path."""
     meta_path = dest_path.parent / (dest_path.name + ".meta.json")
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -139,15 +148,16 @@ def _write_meta(dest_path: Path, meta: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _ingest_session(source: str, cfg: WikiConfig) -> dict:
+def _ingest_session(source: str, cfg: WikiConfig) -> dict[str, Any]:
     """Ingest a Claude Code session log (.jsonl)."""
     source_path = Path(source).resolve()
     if not source_path.exists():
-        raise FileNotFoundError(f"Session file not found: {source}")
+        msg = f"Session file not found: {source}"
+        raise FileNotFoundError(msg)
 
     cfg.raw_sessions.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     stem = _slugify(source_path.stem, max_len=40) or "session"
     dest_name = f"{ts}-{stem}{source_path.suffix}"
     dest_path = cfg.raw_sessions / dest_name
@@ -181,15 +191,16 @@ def _ingest_session(source: str, cfg: WikiConfig) -> dict:
     }
 
 
-def _ingest_file(source: str, cfg: WikiConfig) -> dict:
+def _ingest_file(source: str, cfg: WikiConfig) -> dict[str, Any]:
     """Ingest a document (PDF, markdown, text, etc.)."""
     source_path = Path(source).resolve()
     if not source_path.exists():
-        raise FileNotFoundError(f"File not found: {source}")
+        msg = f"File not found: {source}"
+        raise FileNotFoundError(msg)
 
     cfg.raw_artifacts.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     stem = _slugify(source_path.stem, max_len=40) or "document"
     dest_name = f"{ts}-{stem}{source_path.suffix}"
     dest_path = cfg.raw_artifacts / dest_name
@@ -198,15 +209,14 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
 
     is_pdf = source_path.suffix.lower() == ".pdf"
     manifest_file = dest_path
-    pdf_extras_meta: dict = {}
-    pdf_extras_manifest: dict = {}
+    pdf_extras_meta: dict[str, Any] = {}
+    pdf_extras_manifest: dict[str, Any] = {}
 
     if is_pdf:
         markdown_text = _extract_pdf(dest_path)
         if not markdown_text.strip():
-            raise RuntimeError(
-                f"No text could be extracted from {source_path.name} — the PDF may be scanned/image-only"
-            )
+            msg = f"No text could be extracted from {source_path.name} — the PDF may be scanned/image-only"
+            raise RuntimeError(msg)
         md_path = dest_path.with_suffix(".md")
         md_path.write_text(
             f"# {source_path.stem}\n\n> Extracted from PDF: {source_path.name}\n\n{markdown_text.strip()}\n",
@@ -216,7 +226,7 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
         pdf_extras_meta = {"original_format": "pdf"}
         pdf_extras_manifest = {"extracted_from": str(dest_path.relative_to(cfg.project_root))}
 
-    meta: dict = {
+    meta: dict[str, Any] = {
         "source": str(source_path),
         "date": _timestamp(),
         "type": "file",
@@ -226,7 +236,7 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
     }
     _write_meta(dest_path, meta)
 
-    manifest_entry: dict = {
+    manifest_entry: dict[str, Any] = {
         "id": f"ingest-{_short_id()}",
         "file": str(manifest_file.relative_to(cfg.project_root)),
         "type": "file",
@@ -245,22 +255,27 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict:
     }
 
 
-def _ingest_url(source: str, cfg: WikiConfig) -> dict:
+def _ingest_url(source: str, cfg: WikiConfig) -> dict[str, Any]:
     """Ingest a web article by downloading and extracting text."""
+    parsed = urlparse(source)
+    if parsed.scheme not in _ALLOWED_URL_SCHEMES:
+        msg = f"Unsupported URL scheme '{parsed.scheme}'. Only {sorted(_ALLOWED_URL_SCHEMES)} are allowed."
+        raise RuntimeError(msg)
+
     cfg.raw_web.mkdir(parents=True, exist_ok=True)
 
-    req = Request(source, headers={"User-Agent": "kb-ingest/1.0"})
+    req = Request(source, headers={"User-Agent": "kb-ingest/1.0"})  # noqa: S310  # scheme validated above
     try:
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=30) as resp:  # noqa: S310  # scheme validated above
             raw_html = resp.read().decode("utf-8", errors="replace")
     except URLError as e:
-        raise RuntimeError(f"Failed to fetch URL: {e}")
+        msg = f"Failed to fetch URL: {e}"
+        raise RuntimeError(msg) from e
 
     text = _html_to_text(raw_html)
 
-    parsed = urlparse(source)
     slug = _slugify(parsed.netloc + "-" + parsed.path, max_len=50) or "web-page"
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     dest_name = f"{ts}-{slug}.md"
     dest_path = cfg.raw_web / dest_name
 
@@ -296,11 +311,11 @@ def _ingest_url(source: str, cfg: WikiConfig) -> dict:
     }
 
 
-def _ingest_text(source: str, cfg: WikiConfig) -> dict:
+def _ingest_text(source: str, cfg: WikiConfig) -> dict[str, Any]:
     """Ingest a quick text snippet as a timestamped markdown file."""
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     slug = _slugify(source[:50], max_len=40) or "note"
     dest_name = f"{ts}-{slug}.md"
     dest_path = cfg.raw_inbox / dest_name
@@ -342,11 +357,76 @@ def _ingest_text(source: str, cfg: WikiConfig) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _list_pending(cfg: WikiConfig) -> list:
+def _list_pending(cfg: WikiConfig) -> list[dict[str, Any]]:
     """Return all pending manifest entries."""
     mp = cfg.raw_inbox / ".manifest.json"
     entries = _load_manifest(mp)
     return [e for e in entries if e.get("status") == "pending"]
+
+
+# ---------------------------------------------------------------------------
+# Typer command helpers
+# ---------------------------------------------------------------------------
+
+
+def _print_pending(pending: list[dict[str, Any]]) -> None:
+    """Print pending inbox entries in the human-readable format."""
+    if not pending:
+        typer.echo("No pending items in the inbox.")
+        return
+    typer.echo(f"\nPending inbox items ({len(pending)}):\n")
+    for i, entry in enumerate(pending, 1):
+        typer.echo(f"  [{i}] {entry['id']}  ({entry['type']})")
+        typer.echo(f"      file: {entry['file']}")
+        typer.echo(f"      source: {entry['source']}")
+        typer.echo(f"      date: {entry['date']}")
+        typer.echo("")
+
+
+def _handle_list_mode(cfg: WikiConfig, json_output: bool) -> None:
+    """Handle the --list flag: print pending items."""
+    pending = _list_pending(cfg)
+    if json_output:
+        typer.echo(json.dumps(pending, indent=2))
+    else:
+        _print_pending(pending)
+
+
+def _validate_mode_and_source(mode: str | None, source: str | None) -> tuple[str, str]:
+    """Ensure --mode/--source are present and valid; return narrowed (mode, source)."""
+    if not mode:
+        typer.echo("Error: --mode is required (unless using --list)", err=True)
+        raise typer.Exit(code=1)
+    if mode not in _VALID_MODES:
+        typer.echo(f"Error: --mode must be one of {_VALID_MODES}", err=True)
+        raise typer.Exit(code=1)
+    if not source:
+        typer.echo("Error: --source is required for ingest", err=True)
+        raise typer.Exit(code=1)
+    return mode, source
+
+
+def _dispatch_ingest(mode: str, source: str, cfg: WikiConfig) -> dict[str, Any]:
+    """Dispatch to the right per-mode helper. Caller catches FileNotFoundError/RuntimeError."""
+    dispatch = {
+        "session": _ingest_session,
+        "file": _ingest_file,
+        "url": _ingest_url,
+        "text": _ingest_text,
+    }
+    return dispatch[mode](source, cfg)
+
+
+def _print_ingest_result(result: dict[str, Any], json_output: bool) -> None:
+    """Render an ingest result as JSON or human-readable text."""
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+    typer.echo(f"\nIngested ({result['mode']}):")
+    typer.echo(f"  Destination: {result['dest']}")
+    typer.echo(f"  Manifest ID: {result['manifest_id']}")
+    typer.echo("  Status: pending")
+    typer.echo("\nRun 'kb compile' to process the inbox.")
 
 
 # ---------------------------------------------------------------------------
@@ -355,20 +435,28 @@ def _list_pending(cfg: WikiConfig) -> list:
 
 
 def ingest(
-    mode: Optional[str] = typer.Option(
-        None, "--mode", "-m",
+    mode: str | None = typer.Option(
+        None,
+        "--mode",
+        "-m",
         help="Ingest mode: session, file, url, or text.",
     ),
-    source: Optional[str] = typer.Option(
-        None, "--source", "-s",
+    source: str | None = typer.Option(
+        None,
+        "--source",
+        "-s",
         help="Source path, URL, or text to ingest.",
     ),
     list_pending: bool = typer.Option(
-        False, "--list", "-l",
+        False,
+        "--list",
+        "-l",
         help="List pending inbox items.",
     ),
     json_output: bool = typer.Option(
-        False, "--json", "-j",
+        False,
+        "--json",
+        "-j",
         help="Output as JSON.",
     ),
 ) -> None:
@@ -381,58 +469,18 @@ def ingest(
         cfg = load_config()
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
-    # --list mode
     if list_pending:
-        pending = _list_pending(cfg)
-        if json_output:
-            typer.echo(json.dumps(pending, indent=2))
-        else:
-            if not pending:
-                typer.echo("No pending items in the inbox.")
-                return
-            typer.echo(f"\nPending inbox items ({len(pending)}):\n")
-            for i, entry in enumerate(pending, 1):
-                typer.echo(f"  [{i}] {entry['id']}  ({entry['type']})")
-                typer.echo(f"      file: {entry['file']}")
-                typer.echo(f"      source: {entry['source']}")
-                typer.echo(f"      date: {entry['date']}")
-                typer.echo("")
+        _handle_list_mode(cfg, json_output)
         return
 
-    # Validate ingest mode
-    if not mode:
-        typer.echo("Error: --mode is required (unless using --list)", err=True)
-        raise typer.Exit(code=1)
-
-    valid_modes = ("session", "file", "url", "text")
-    if mode not in valid_modes:
-        typer.echo(f"Error: --mode must be one of {valid_modes}", err=True)
-        raise typer.Exit(code=1)
-
-    if not source:
-        typer.echo("Error: --source is required for ingest", err=True)
-        raise typer.Exit(code=1)
-
-    dispatch = {
-        "session": _ingest_session,
-        "file": _ingest_file,
-        "url": _ingest_url,
-        "text": _ingest_text,
-    }
+    valid_mode, valid_source = _validate_mode_and_source(mode, source)
 
     try:
-        result = dispatch[mode](source, cfg)
+        result = _dispatch_ingest(valid_mode, valid_source, cfg)
     except (FileNotFoundError, RuntimeError) as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
-    if json_output:
-        typer.echo(json.dumps(result, indent=2, default=str))
-    else:
-        typer.echo(f"\nIngested ({result['mode']}):")
-        typer.echo(f"  Destination: {result['dest']}")
-        typer.echo(f"  Manifest ID: {result['manifest_id']}")
-        typer.echo(f"  Status: pending")
-        typer.echo(f"\nRun 'kb compile' to process the inbox.")
+    _print_ingest_result(result, json_output)

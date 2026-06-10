@@ -15,14 +15,14 @@ repos:
 
       - id: mypy
         name: mypy
-        entry: uv run mypy src/
+        entry: uv run --directory plugins/karpathy-llm-wiki/llm-wiki-core mypy src/
         language: system
         pass_filenames: false
         types: [python]
 
       - id: vulture
         name: vulture
-        entry: uv run vulture
+        entry: uv run --directory plugins/karpathy-llm-wiki/llm-wiki-core vulture
         language: system
         pass_filenames: false
         types: [python]

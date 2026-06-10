@@ -78,7 +78,7 @@ indent-style = "space"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["lancedb.*", "sentence_transformers.*", "matplotlib.*", "pyarrow.*", "pandas.*", "marker.*"]
+module = ["lancedb.*", "sentence_transformers.*", "matplotlib.*", "pyarrow.*", "pandas.*", "marker.*", "yaml"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

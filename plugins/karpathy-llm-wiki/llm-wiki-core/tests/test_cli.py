@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from llm_wiki.cli import app
 
+
 runner = CliRunner()
 
 
@@ -17,7 +18,7 @@ runner = CliRunner()
 class TestHelpOutput:
     """``kb --help`` should advertise all subcommands."""
 
-    EXPECTED_SUBCOMMANDS = ["init", "ingest", "compile", "search", "lint", "index", "charts"]
+    EXPECTED_SUBCOMMANDS = ("init", "ingest", "compile", "search", "lint", "index", "charts")
 
     def test_help_shows_all_subcommands(self):
         result = runner.invoke(app, ["--help"])

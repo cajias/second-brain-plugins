@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pytest
 import yaml
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
 from llm_wiki.commands.init_cmd import DIRECTORIES
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 runner = CliRunner()
 
@@ -61,6 +65,7 @@ class TestInitCreatesDirectories:
         assert manifest.exists(), ".manifest.json not created"
 
         import json
+
         data = json.loads(manifest.read_text())
         assert data == []
 

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 runner = CliRunner()
 
@@ -33,7 +38,7 @@ def _read_manifest(wiki_root: Path) -> list[dict]:
 
 def _invoke_ingest(args: list[str], wiki_root: Path):
     """Invoke ingest with cwd set to the wiki_root so config is found."""
-    return runner.invoke(app, ["ingest"] + args, env={"KB_ROOT": str(wiki_root)})
+    return runner.invoke(app, ["ingest", *args], env={"KB_ROOT": str(wiki_root)})
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +93,7 @@ class TestIngestFile:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def _mock_marker(monkeypatch):
     """Patch _extract_pdf so Marker models are never loaded in tests."""
     monkeypatch.setattr(

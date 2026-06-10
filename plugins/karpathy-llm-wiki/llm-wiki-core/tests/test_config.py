@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-import yaml
 
-from llm_wiki.core.config import get_project_root, load_config, load_raw_config, WikiConfig
+from llm_wiki.core.config import WikiConfig, get_project_root, load_config, load_raw_config
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 # ---------------------------------------------------------------------------

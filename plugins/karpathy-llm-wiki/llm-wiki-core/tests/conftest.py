@@ -94,7 +94,19 @@ updated: "2026-04-09"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
+def _clear_wiki_root_env(monkeypatch):
+    """Isolate tests from the developer's ambient ``KARPATHY_WIKI_ROOT``.
+
+    Config resolution checks this env var before walking up from cwd, so a
+    value set in the shell (e.g. via direnv) would otherwise make tests that
+    rely on the ``wiki_root``/``wiki_root_bare`` fixtures resolve to the wrong
+    project. Clearing it makes config resolution deterministic.
+    """
+    monkeypatch.delenv("KARPATHY_WIKI_ROOT", raising=False)
+
+
+@pytest.fixture
 def wiki_root(tmp_path: Path) -> Path:
     """Create a minimal wiki project directory with config and taxonomy.
 
@@ -131,7 +143,7 @@ def wiki_root(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.fixture()
+@pytest.fixture
 def wiki_root_bare(tmp_path: Path) -> Path:
     """Return a completely empty temp directory (no .kb-config.yml)."""
     root = tmp_path / "empty-project"
@@ -139,7 +151,7 @@ def wiki_root_bare(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.fixture()
+@pytest.fixture
 def sample_note_content() -> str:
     """Return a well-formed permanent note with full frontmatter."""
     return """\
@@ -170,7 +182,7 @@ validates JWT tokens before routing to downstream services.
 """
 
 
-@pytest.fixture()
+@pytest.fixture
 def sample_note_missing_fields() -> str:
     """Return a note missing required frontmatter fields."""
     return """\
@@ -185,7 +197,7 @@ This note is missing knowledge_type, status, confidence, scope, tags, source, cr
 """
 
 
-@pytest.fixture()
+@pytest.fixture
 def sample_note_rogue_tags() -> str:
     """Return a note whose tags are not in the approved taxonomy."""
     return """\
@@ -210,7 +222,7 @@ This note has invalid tags that should be caught by lint.
 """
 
 
-@pytest.fixture()
+@pytest.fixture
 def populated_wiki(wiki_root: Path, sample_note_content: str) -> Path:
     """Create a wiki with several permanent notes for testing search/index/lint."""
     permanent = wiki_root / "wiki" / "permanent"
@@ -262,7 +274,7 @@ Nobody links here.
     return wiki_root
 
 
-@pytest.fixture()
+@pytest.fixture
 def manifest_with_entries(wiki_root: Path) -> Path:
     """Create a .manifest.json with two entries, one pending, one processed."""
     manifest_path = wiki_root / "raw" / "inbox" / ".manifest.json"
@@ -288,7 +300,7 @@ def manifest_with_entries(wiki_root: Path) -> Path:
     return wiki_root
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_embedding_model(monkeypatch):
     """Mock sentence-transformers so tests don't download a 90MB model.
 
@@ -311,6 +323,7 @@ def mock_embedding_model(monkeypatch):
 
     # Patch the module-level cache in embeddings.py
     import llm_wiki.core.embeddings as emb_mod
+
     monkeypatch.setattr(emb_mod, "_model", model)
     # Also patch get_model to return our mock
     monkeypatch.setattr(emb_mod, "get_model", lambda: model)

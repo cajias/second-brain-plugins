@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from importlib import resources as importlib_resources
 from pathlib import Path
 
 import typer
@@ -30,12 +29,15 @@ DIRECTORIES = [
 
 
 def init(
-    path: Path = typer.Argument(
-        Path("."),
+    path: Path = typer.Argument(  # noqa: B008  # Typer requires `Argument()` evaluated at definition
+        Path(),
         help="Directory to initialize the wiki in (defaults to current directory).",
     ),
     json_output: bool = typer.Option(
-        False, "--json", "-j", help="Output result as JSON.",
+        False,
+        "--json",
+        "-j",
+        help="Output result as JSON.",
     ),
 ) -> None:
     """Initialize a new knowledge base wiki."""
