@@ -18,19 +18,17 @@ import logging
 import re
 import secrets
 import string
+import sys
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import typer
 
 from llm_wiki.commands.charts import _generate_all_charts
 from llm_wiki.core.config import WikiConfig, load_config
-from llm_wiki.core.dedup import check_duplicate
+from llm_wiki.core.dedup import check_duplicate, check_duplicates_batch
 from llm_wiki.core.taxonomy import load_taxonomy_safe
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
@@ -211,30 +209,55 @@ def _load_manifest_entries(manifest_path: Path) -> tuple[Any | None, list[dict[s
     return manifest, entries, None
 
 
-def _mark_processed(entry_id: str, cfg: WikiConfig) -> dict[str, Any]:
-    """Update a manifest entry's status from 'pending' to 'processed'."""
+def _write_manifest(manifest: object, path: Path) -> None:
+    """Atomically write the manifest: write to a temp file then replace.
+
+    ``Path.replace`` is atomic on the same filesystem, so a crash mid-write
+    cannot leave a truncated manifest behind.
+    """
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _mark_processed_batch(entry_ids: list[str], cfg: WikiConfig) -> dict[str, Any]:
+    """Mark many manifest entries as processed in a single read-modify-write.
+
+    Loads the manifest once, marks each requested id that exists, and writes the
+    file once (only if at least one id matched). Existing manifest keys are
+    preserved.
+
+    Returns ``{"success", "processed", "not_found"}`` where ``success`` is True
+    iff at least one requested id was found and marked.
+    """
     manifest_path = cfg.raw_inbox / ".manifest.json"
     manifest, entries, err = _load_manifest_entries(manifest_path)
     if err is not None or entries is None:
-        return {"success": False, "error": err}
+        return {"success": False, "processed": [], "not_found": list(entry_ids), "error": err}
 
-    found = False
-    for entry in entries:
-        if entry.get("id") == entry_id:
-            entry["status"] = "processed"
-            entry["processed_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
-            found = True
-            break
+    by_id = {entry.get("id"): entry for entry in entries}
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
-    if not found:
-        return {"success": False, "error": f"Entry '{entry_id}' not found in manifest."}
+    processed: list[str] = []
+    not_found: list[str] = []
+    for entry_id in entry_ids:
+        entry = by_id.get(entry_id)
+        if entry is None:
+            not_found.append(entry_id)
+            continue
+        entry["status"] = "processed"
+        entry["processed_at"] = now
+        processed.append(entry_id)
+
+    if not processed:
+        return {"success": False, "processed": [], "not_found": not_found}
 
     try:
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        _write_manifest(manifest, manifest_path)
     except OSError as e:
-        return {"success": False, "error": f"Could not write manifest: {e}"}
+        return {"success": False, "processed": [], "not_found": not_found, "error": f"Could not write manifest: {e}"}
 
-    return {"success": True, "entry_id": entry_id, "new_status": "processed"}
+    return {"success": True, "processed": processed, "not_found": not_found}
 
 
 def _validate_candidate_inputs(
@@ -341,6 +364,56 @@ def _handle_check_dedup(query: str, cfg: WikiConfig, json_output: bool) -> None:
         typer.echo(json.dumps(result, indent=2))
     else:
         _print_dedup_result(result)
+
+
+def _read_dedup_batch_items(path: str) -> list[dict[str, Any]]:
+    """Read + validate the batch-dedup input (file path, or '-' for stdin).
+
+    Expects a JSON list of objects each having ``key`` and ``query``. Raises
+    ``typer.Exit(code=1)`` with a clear message on any malformed input.
+    """
+    try:
+        raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        typer.echo(f"Error: could not read batch input: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError as e:
+        typer.echo(f"Error: invalid JSON in batch input: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    if not isinstance(items, list):
+        typer.echo("Error: batch input must be a JSON array of {key, query} objects.", err=True)
+        raise typer.Exit(code=1)
+
+    for item in items:
+        if not isinstance(item, dict) or "key" not in item or "query" not in item:
+            typer.echo("Error: each batch item must be an object with 'key' and 'query'.", err=True)
+            raise typer.Exit(code=1)
+
+    return items
+
+
+def _handle_check_dedup_batch(path: str, cfg: WikiConfig, json_output: bool) -> None:
+    items = _read_dedup_batch_items(path)
+    queries = [str(item["query"]) for item in items]
+    results = check_duplicates_batch(queries, cfg.db_path, cfg.table_name)
+
+    output = [
+        {
+            "key": item["key"],
+            "status": res["status"],
+            "top_score": res["top_score"],
+            "matches": res["matches"],
+        }
+        for item, res in zip(items, results, strict=True)
+    ]
+
+    # This subcommand is machine-facing, so it always emits JSON. --json picks
+    # the compact form; otherwise the same array is pretty-printed.
+    typer.echo(json.dumps(output) if json_output else json.dumps(output, indent=2))
 
 
 def _validate_write_note_fields(  # one parameter per CLI flag
@@ -488,14 +561,23 @@ def _handle_list_inbox(cfg: WikiConfig, candidates_only: bool, include_maybe: bo
         _print_inbox_entries(entries, candidates_only)
 
 
-def _handle_mark_processed(entry_id: str, cfg: WikiConfig, json_output: bool) -> None:
-    result = _mark_processed(entry_id, cfg)
+def _handle_mark_processed(entry_ids: list[str], cfg: WikiConfig, json_output: bool) -> None:
+    # Flatten comma-separated and/or repeated values into a clean id list.
+    flat_ids = [piece.strip() for raw in entry_ids for piece in raw.split(",") if piece.strip()]
+    result = _mark_processed_batch(flat_ids, cfg)
+
     if json_output:
         typer.echo(json.dumps(result, indent=2))
-    elif result["success"]:
-        typer.echo(f"Marked '{entry_id}' as processed.")
     else:
-        typer.echo(f"Error: {result['error']}", err=True)
+        if result["processed"]:
+            typer.echo(f"Marked {len(result['processed'])} entry(ies) as processed: {', '.join(result['processed'])}")
+        if result["not_found"]:
+            typer.echo(f"Not found: {', '.join(result['not_found'])}")
+        if result.get("error") and not result["processed"]:
+            typer.echo(f"Error: {result['error']}", err=True)
+
+    # Error (exit 1) only when nothing was found/marked; partial success exits 0.
+    if not result["processed"]:
         raise typer.Exit(code=1)
 
 
@@ -563,6 +645,11 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
         "--check-dedup",
         help="Check for duplicate/similar content in the index.",
     ),
+    check_dedup_batch: str | None = typer.Option(
+        None,
+        "--check-dedup-batch",
+        help='Batch dedup-check: path to a JSON file of [{"key","query"}], or \'-\' for stdin.',
+    ),
     write_note: bool = typer.Option(
         False,
         "--write-note",
@@ -583,10 +670,10 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
         "--include-maybe",
         help="With --candidates-only, also include verdict=maybe entries.",
     ),
-    mark_processed: str | None = typer.Option(
+    mark_processed: list[str] | None = typer.Option(  # noqa: B008  # Typer requires the call in the default
         None,
         "--mark-processed",
-        help="Mark a manifest entry as processed.",
+        help="Mark manifest entry(ies) as processed. Accepts comma-separated and/or repeated values.",
     ),
     # Tag-candidate fields (used with --tag-candidate)
     tag_candidate: str | None = typer.Option(
@@ -662,6 +749,8 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
 
     if check_dedup:
         _handle_check_dedup(check_dedup, cfg, json_output)
+    elif check_dedup_batch:
+        _handle_check_dedup_batch(check_dedup_batch, cfg, json_output)
     elif write_note:
         _handle_write_note(title, knowledge_type, tags, confidence, source, body, cfg, dry_run, json_output)
     elif list_inbox:
@@ -672,7 +761,8 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
         _handle_tag_candidate(tag_candidate, verdict, score, reason, suggested_type, suggested_tags, cfg, json_output)
     else:
         typer.echo(
-            "Error: Specify one of --check-dedup, --write-note, --list-inbox, --mark-processed, or --tag-candidate",
+            "Error: Specify one of --check-dedup, --check-dedup-batch, --write-note, --list-inbox, "
+            "--mark-processed, or --tag-candidate",
             err=True,
         )
         raise typer.Exit(code=1)

@@ -83,3 +83,33 @@ def check_duplicate(
         "top_score": top_score,
         "matches": matches,
     }
+
+
+def check_duplicates_batch(
+    queries: list[str],
+    db_path: Path,
+    table_name: str,
+    threshold: float = 0.92,
+) -> list[dict[str, Any]]:
+    """Check many candidates for duplicates in a single process.
+
+    Returns one result dict per query, in the same order as the input.
+
+    The win here is process-collapse: the embedding model is cached in a
+    module-level global (see ``core/embeddings.py``), so it cold-loads from
+    disk only once for the whole batch instead of once per spawned ``kb``
+    process. A future optimization could embed every query in a single
+    ``embed_texts`` call and then run one LanceDB query per vector, to also
+    amortize the encode pass — not implemented here, since the dominant cost
+    is the per-process model cold-load, not the encode.
+
+    Args:
+        queries: Texts to check for duplicates.
+        db_path: Path to the LanceDB database.
+        table_name: Name of the LanceDB table.
+        threshold: Cosine similarity threshold for "duplicate" status.
+
+    Returns:
+        List of result dicts (same shape as ``check_duplicate``), in order.
+    """
+    return [check_duplicate(query, db_path, table_name, threshold) for query in queries]
