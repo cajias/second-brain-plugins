@@ -77,6 +77,84 @@ class TestDedupModule:
         assert result["top_score"] == 0.0
         assert result["matches"] == []
 
+    def test_batch_returns_one_result_per_query_in_order(self, wiki_root: Path, mock_embedding_model):
+        """check_duplicates_batch returns one result per query, same order."""
+        from llm_wiki.core.dedup import check_duplicates_batch
+
+        queries = ["first query", "second query", "third query"]
+        results = check_duplicates_batch(queries, wiki_root / ".lancedb", "notes")
+        assert len(results) == len(queries)
+        for res in results:
+            assert res["status"] in ("unique", "similar", "duplicate")
+            assert "top_score" in res
+            assert isinstance(res["matches"], list)
+
+    def test_batch_matches_single_results(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Batch results equal the per-query single-call results (with an index)."""
+        from llm_wiki.core.dedup import check_duplicate, check_duplicates_batch
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        db_path = populated_wiki / ".lancedb"
+
+        queries = ["Token Refresh Strategy", "completely novel xyz123"]
+        batch = check_duplicates_batch(queries, db_path, "notes")
+        singles = [check_duplicate(q, db_path, "notes") for q in queries]
+        assert [r["status"] for r in batch] == [r["status"] for r in singles]
+
+    def test_batch_empty_queries(self, wiki_root: Path, mock_embedding_model):
+        from llm_wiki.core.dedup import check_duplicates_batch
+
+        assert check_duplicates_batch([], wiki_root / ".lancedb", "notes") == []
+
+
+class TestCheckDedupBatchCLI:
+    """``kb compile --check-dedup-batch`` reads a JSON list and emits keyed results."""
+
+    def test_batch_from_file(self, wiki_root: Path, tmp_path: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(wiki_root)
+        batch_file = tmp_path / "batch.json"
+        batch_file.write_text(
+            json.dumps(
+                [
+                    {"key": "k1", "query": "some idea about caching"},
+                    {"key": "k2", "query": "another distinct idea"},
+                ]
+            )
+        )
+        result = runner.invoke(app, ["compile", "--check-dedup-batch", str(batch_file)])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert isinstance(data, list)
+        assert [item["key"] for item in data] == ["k1", "k2"]
+        for item in data:
+            assert item["status"] in ("unique", "similar", "duplicate")
+            assert "top_score" in item
+            assert isinstance(item["matches"], list)
+
+    def test_batch_from_stdin(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(wiki_root)
+        payload = json.dumps([{"key": "only", "query": "novel content"}])
+        result = runner.invoke(app, ["compile", "--check-dedup-batch", "-"], input=payload)
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+        assert data[0]["key"] == "only"
+
+    def test_batch_malformed_json_errors(self, wiki_root: Path, tmp_path: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(wiki_root)
+        batch_file = tmp_path / "bad.json"
+        batch_file.write_text("{not json")
+        result = runner.invoke(app, ["compile", "--check-dedup-batch", str(batch_file)])
+        assert result.exit_code != 0
+
+    def test_batch_missing_fields_errors(self, wiki_root: Path, tmp_path: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(wiki_root)
+        batch_file = tmp_path / "missing.json"
+        batch_file.write_text(json.dumps([{"key": "k1"}]))
+        result = runner.invoke(app, ["compile", "--check-dedup-batch", str(batch_file)])
+        assert result.exit_code != 0
+
 
 # ---------------------------------------------------------------------------
 # Write note
@@ -187,6 +265,67 @@ class TestMarkProcessed:
         monkeypatch.chdir(manifest_with_entries)
         result = runner.invoke(app, ["compile", "--mark-processed", "nonexistent-id"])
         assert result.exit_code != 0 or "not found" in result.stdout.lower()
+
+    def test_marks_comma_separated_ids(self, manifest_with_entries: Path, monkeypatch):
+        """Comma-separated ids mark all entries with a single manifest write."""
+        monkeypatch.chdir(manifest_with_entries)
+        result = runner.invoke(
+            app,
+            ["compile", "--mark-processed", "ingest-aaa11111,ingest-bbb22222"],
+        )
+        assert result.exit_code == 0
+
+        manifest = manifest_with_entries / "raw" / "inbox" / ".manifest.json"
+        entries = json.loads(manifest.read_text())
+        statuses = {e["id"]: e["status"] for e in entries}
+        assert statuses["ingest-aaa11111"] == "processed"
+        assert statuses["ingest-bbb22222"] == "processed"
+        # No leftover temp file from the atomic write.
+        assert not (manifest_with_entries / "raw" / "inbox" / ".manifest.json.tmp").exists()
+
+    def test_marks_repeated_flag_ids(self, manifest_with_entries: Path, monkeypatch):
+        """Repeated --mark-processed flags mark all entries."""
+        monkeypatch.chdir(manifest_with_entries)
+        result = runner.invoke(
+            app,
+            [
+                "compile",
+                "--mark-processed",
+                "ingest-aaa11111",
+                "--mark-processed",
+                "ingest-bbb22222",
+            ],
+        )
+        assert result.exit_code == 0
+
+        manifest = manifest_with_entries / "raw" / "inbox" / ".manifest.json"
+        entries = json.loads(manifest.read_text())
+        statuses = {e["id"]: e["status"] for e in entries}
+        assert statuses["ingest-aaa11111"] == "processed"
+        assert statuses["ingest-bbb22222"] == "processed"
+
+    def test_partial_match_marks_found_reports_missing(self, manifest_with_entries: Path, monkeypatch):
+        """One valid + one bogus id: valid marked, exit 0, bogus in not_found."""
+        monkeypatch.chdir(manifest_with_entries)
+        result = runner.invoke(
+            app,
+            ["compile", "--mark-processed", "ingest-aaa11111,bogus-id", "--json"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["processed"] == ["ingest-aaa11111"]
+        assert data["not_found"] == ["bogus-id"]
+
+        manifest = manifest_with_entries / "raw" / "inbox" / ".manifest.json"
+        entries = json.loads(manifest.read_text())
+        target = next(e for e in entries if e["id"] == "ingest-aaa11111")
+        assert target["status"] == "processed"
+
+    def test_all_bogus_ids_error(self, manifest_with_entries: Path, monkeypatch):
+        """No requested id found -> non-zero exit."""
+        monkeypatch.chdir(manifest_with_entries)
+        result = runner.invoke(app, ["compile", "--mark-processed", "x,y"])
+        assert result.exit_code != 0
 
 
 # ---------------------------------------------------------------------------

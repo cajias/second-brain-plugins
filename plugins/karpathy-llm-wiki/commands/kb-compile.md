@@ -83,7 +83,11 @@ If pass-1 yield was unusually low (<10% verdict=yes on a corpus you expected to 
 kb compile --list-inbox --candidates-only --include-maybe --json
 ```
 
-## Step 3: Process each pending item
+## Step 3: Process the batch
+
+Process the batch in two phases: first extract atomic ideas from every pending item and dedup the
+whole batch in **one** call (3a-3c), then write the surviving notes (3d). Mark-processed happens
+once at finalize (Step 4), not per item.
 
 For each pending item in the inbox (or each candidate from Pass 2):
 
@@ -111,23 +115,48 @@ For each atomic idea, determine:
 
 > **If the entry came from a Pass 1 candidate**: the manifest's `suggested_type` and `suggested_tags` are useful starting hints. Treat them as a default, but override freely once you've done the full read -- the deeper read may surface a better fit.
 
-### 3c. Check for duplicates
+**Don't dedup or write yet.** Instead, collect each candidate idea for the whole batch into a list, recording for each a stable `key` you can map back to it (e.g. `<manifest-entry-id>#<n>`) plus its query text (the title or a key phrase). Also keep, per source item, the list of manifest entry ids you successfully extracted from -- these are marked processed once at finalize (Step 4).
 
-For each atomic idea, run the dedup check:
+### 3c. Check for duplicates (one batch call)
+
+This replaces the previous per-idea dedup step. Instead of running `kb compile --check-dedup` (or `kb search ... --json`) once per idea, dedup the whole batch in a **single** process, so the embedding model cold-load is paid once rather than once per idea.
+
+Write all collected candidates to a temp JSON file shaped `[{"key": "...", "query": "..."}]`:
 
 ```bash
-kb compile --check-dedup "TITLE OR KEY PHRASE" --json
+cat > /tmp/dedup-batch.json <<'EOF'
+[
+  {"key": "ingest-aaa#1", "query": "Title or key phrase for idea 1"},
+  {"key": "ingest-aaa#2", "query": "Title or key phrase for idea 2"}
+]
+EOF
 ```
 
-Interpret the result:
+Run one batch dedup check, passing the JSON file path:
+
+```bash
+kb compile --check-dedup-batch /tmp/dedup-batch.json --json
+```
+
+Or pass `-` to read the JSON from stdin instead of a file (skips the temp file):
+
+```bash
+cat /tmp/dedup-batch.json | kb compile --check-dedup-batch - --json
+```
+
+The output is a JSON array `[{"key", "status", "top_score", "matches"}]`. Map each result back to its idea via `key` and branch by `status`:
 
 - **`status: "unique"` (score < 0.80)**: Proceed to write the note
-- **`status: "similar"` (score 0.80-0.91)**: Flag it. Show the user the similar note(s) and ask whether to proceed, merge, or skip. If using `--dry-run`, just note it as "flagged for review".
+- **`status: "similar"` (score 0.80-0.91)**: Flag it. Show the user the similar note(s) and ask whether to proceed, merge, or skip. If using `--dry-run`, just note it as "flagged for review". If proceeding, create the note and add a similarity note in the body referencing the matching note(s).
 - **`status: "duplicate"` (score >= 0.92)**: Skip it. Report that it's a duplicate of the matching note.
 
-### 3d. Write the note (if not duplicate)
+Clean up the temp file when done: `rm /tmp/dedup-batch.json`.
 
-For unique ideas, write the note:
+### 3d. Write the notes (with batch-context linking)
+
+For each non-duplicate idea, write the note. **Maintain a running list of the titles/slugs you have created so far in THIS batch**, and when writing each new note add `[[wikilinks]]` to any already-created sibling from the same batch whose topic is related -- *in addition* to links into the existing wiki (see Wikilink Guidelines below). This matters because `kb index` only runs at the end of the batch (Step 4), so a mid-batch `kb search` cannot see siblings written moments earlier -- the sibling-link signal must be carried in context.
+
+Write each note:
 
 ```bash
 kb compile --write-note \
@@ -151,7 +180,7 @@ kb compile --dry-run --write-note \
   --body "Preview content."
 ```
 
-**Shell escaping**: For multi-line body content, write the body to a temp file and pass it via stdin or `--body-file`:
+**Shell escaping**: For multi-line body content, write the body to a temp file and pass it via command substitution with `--body`:
 
 ```bash
 kb compile --write-note \
@@ -163,19 +192,23 @@ kb compile --write-note \
   --body "$(cat /tmp/note-body.md)"
 ```
 
-### 3e. Mark as processed
+## Step 4: Finalize -- mark processed, then update artifacts
 
-After all ideas from a raw document are written (or skipped), mark it as processed:
+### 4a. Mark all processed (one batched call)
+
+Do **not** mark items processed inside the per-item loop. After the whole batch is written (or skipped), mark every successfully-compiled source item processed in a **single** batched call -- one invocation, one manifest write:
 
 ```bash
-kb compile --mark-processed "MANIFEST_ENTRY_ID"
+kb compile --mark-processed "id1,id2,id3"
 ```
 
-Skip this step in `--dry-run` mode.
+`--mark-processed` accepts a comma-separated list (or repeated `--mark-processed id1 --mark-processed id2`). It exits non-zero only if **none** of the ids were found; partial matches mark the found ones and report a `not_found` list. Skip this step in `--dry-run` mode.
 
-## Step 4: Update the index and refresh artifacts
+Optionally, before indexing, do a light intra-batch link sweep: revisit the notes created this run and add any sibling `[[wikilinks]]` surfaced by the accumulated batch title list that were missed on first write.
 
-After processing all items, update the vector index and regenerate charts:
+### 4b. Update the index and refresh artifacts
+
+Update the vector index and regenerate charts:
 
 ```bash
 kb index --incremental
@@ -231,6 +264,8 @@ kb search "TOPIC" --limit 3 --json
 ```
 
 Use the filenames (without `.md`) from the search results as wikilinks: `[[filename-here]]`.
+
+**Sibling (batch-context) links**: `kb search` only sees notes already in the index, and the index is refreshed once at the end of the batch (Step 4b). So also link to related notes you created *earlier in this same batch* using the running title/slug list you maintained in Step 3d -- those siblings won't show up in `kb search` yet.
 
 ## Important Notes
 
