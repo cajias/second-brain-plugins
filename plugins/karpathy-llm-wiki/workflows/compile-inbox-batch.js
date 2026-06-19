@@ -1,13 +1,13 @@
 export const meta = {
   name: 'compile-inbox-batch',
   description: 'Compile the next N pending llm-wiki inbox items into atomic notes, then index, lint, and de-orphan them (single final index pass; parallel-safe de-orphan).',
-  whenToUse: 'Run to process a batch of pending raw/artifacts inbox items end-to-end: scope-judge + dedup + normalize + write-note (fanned out ~6 agents), one batched mark-processed call, then lint, plan inbound backlinks (sibling-aware), de-orphan in parallel partitioned by source file, and a single index+charts pass. Re-invoke for each subsequent batch. Args: { count, chunkSize, compileAgents, workingDir }.',
+  whenToUse: 'Run to process a batch of pending raw/artifacts inbox items end-to-end: scope-judge + dedup + normalize + write-note (fanned out ~6 agents), one batched mark-processed call, then lint, plan inbound backlinks that bridge each orphan to an existing, well-connected hub note (no orphan-to-orphan, no MOCs), de-orphan in parallel partitioned by source file, and a single index+charts pass. Re-invoke for each subsequent batch. Args: { count, chunkSize, compileAgents, workingDir }.',
   phases: [
     { title: 'Discover', detail: 'list the next N pending inbox items' },
     { title: 'Compile', detail: 'fan out ~6 agents: scope-judge, dedup, normalize, write-note' },
     { title: 'Finalize', detail: 'one agent: batched mark-processed (no index/charts here)' },
     { title: 'Find Orphans', detail: 'lint to list the freshly-orphaned notes' },
-    { title: 'Plan Links', detail: 'parallel read-only: pick an inbound source per orphan (sibling-first)' },
+    { title: 'Plan Links', detail: 'parallel read-only: bridge each orphan to an existing, well-connected hub note (no orphan-to-orphan, no MOCs)' },
     { title: 'De-orphan', detail: 'parallel, partitioned by source file: append inbound backlinks' },
     { title: 'Verify', detail: 'single pass: lint + index + charts; confirm orphans == 0' },
   ],
@@ -212,25 +212,28 @@ Run: kb lint --json
 Parse it. An orphan = a note whose inbound backlink list (linked_from) is EMPTY (outbound links_to do NOT count). Return structured output: orphans = [ {file: "<filename-without-.md>", title: "<title if the lint JSON exposes it, else omit>"} ] for EVERY current orphan, and orphan_count = number of orphans. Do NOT open every note just to fetch titles — include title only if cheaply available. Do not modify anything. Do not run index or charts.`
 }
 
-function planPrompt(orphanSlice, newNotes) {
+function planPrompt(orphanSlice, newNotes, allOrphans) {
   const olist = orphanSlice.map(o => `- ${o.file}  (${o.title || ''})`).join('\n')
-  const nlist = newNotes.map(n => `- ${n.file}  (${n.title || ''})`).join('\n')
-  return `You PLAN inbound backlinks to de-orphan notes. READ-ONLY — do NOT edit any file and do NOT run kb index/charts. Working directory: ${WD}. Run kb from there.
+  const forbidden = new Set()
+  for (const o of (allOrphans || [])) forbidden.add(typeof o === 'string' ? o : o.file)
+  for (const n of (newNotes || [])) if (n && n.file) forbidden.add(n.file)
+  const xlist = [...forbidden].filter(Boolean).join(', ')
+  return `You PLAN inbound backlinks that BRIDGE orphan notes into the existing main graph. READ-ONLY — do NOT edit files, do NOT run kb index/charts. Working directory: ${WD}. Run kb from there.
 
-An orphan = a note with zero inbound backlinks. To de-orphan it, some OTHER note must link TO it. Your job is only to CHOOSE the best SOURCE note to link FROM for each orphan; a later step performs the edits.
+An orphan = a note with zero inbound backlinks. For each orphan, choose the single best SOURCE note that should link TO it. The SOURCE receives a new outbound [[orphan]] wikilink, so the source is what attaches the orphan to the rest of the graph.
 
-Orphans to plan (filename without .md, and title):
+HARD RULES (these prevent islands — follow exactly):
+- The SOURCE must be an EXISTING note that is NOT itself an orphan and was NOT created in this batch. NEVER use a source that appears in the FORBIDDEN list below (those are the current orphans + this batch's new notes). Linking an orphan to another orphan only builds a disconnected island — do not do it.
+- The link must reflect a REAL topical relationship. Find the source by SEMANTIC similarity: run kb search "<orphan's core topic or title>" --limit 8 --json, then pick the highest-ranked result whose filename is NOT in the forbidden set (that result is an established, well-connected note). NEVER pair notes by alphabetical or filename proximity.
+- If NO genuinely related established note exists for an orphan, mark it UNRESOLVED. Do NOT fabricate a link and do NOT fall back to an orphan-to-orphan link.
+
+Orphans to bridge (filename without .md, and title):
 ${olist}
 
-This batch's freshly-written sibling notes (EXACT filenames you may use as sources for intra-batch links):
-${nlist}
+FORBIDDEN as sources (current orphans + this batch's new notes — never use any of these as a source):
+${xlist}
 
-For EACH orphan, pick the single best source, by this preference:
-1. A strongly-related SIBLING from the freshly-written list above (use its EXACT filename). Intra-batch links are cheap and connect the imported cluster — prefer this when a clearly related sibling exists.
-2. Otherwise find a related, well-connected EXISTING note via: kb search "<orphan core topic>" --limit 5 --json. Pick a real existing filename (resolve it exactly; never the orphan itself).
-A single source may serve multiple orphans. Never choose the orphan as its own source.
-
-Return structured output: pairs = [ {orphan: "<orphan filename>", source: "<source filename to link FROM>"} ] one per orphan you can plan, and unresolved = [orphan filenames] with no good source.`
+Return structured output: pairs = [ {orphan, source} ] where source is an EXISTING well-connected note NOT in the forbidden set (one per orphan you can genuinely bridge), and unresolved = [orphan filenames] for orphans with no genuinely related established source.`
 }
 
 function applyPrompt(assignments) {
@@ -296,7 +299,7 @@ if (orphans.length > 0) {
   const newNotes = written.map(w => ({ file: w.note_file, title: w.title })).filter(n => n.file)
   const planChunks = chunk(orphans, PLAN_SLICE)
   const plans = await parallel(planChunks.map((c, i) => () =>
-    agent(planPrompt(c, newNotes), { label: `plan:${i + 1}/${planChunks.length}`, phase: 'Plan Links', schema: PLAN_SCHEMA })))
+    agent(planPrompt(c, newNotes, orphans), { label: `plan:${i + 1}/${planChunks.length}`, phase: 'Plan Links', schema: PLAN_SCHEMA })))
   const pairs = plans.filter(Boolean).flatMap(p => (p.pairs || []))
   planUnresolved = plans.filter(Boolean).flatMap(p => (p.unresolved || []))
   // Group edits by the SOURCE file being edited; each distinct source file -> exactly one editor agent (no write race).
