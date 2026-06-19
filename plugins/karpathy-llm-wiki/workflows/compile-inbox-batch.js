@@ -47,8 +47,7 @@ const DISCOVER_SCHEMA = {
       type: 'array',
       items: {
         type: 'object', additionalProperties: false,
-        // source_class (when the manifest entry records it) tunes the dedup duplicate
-        // threshold downstream (chat=0.92 default, doc=0.93, book/paper=0.94).
+        // source_class (when the manifest entry records it) tunes the dedup duplicate threshold downstream.
         properties: { id: { type: 'string' }, file: { type: 'string' }, source_class: { type: 'string' } },
         required: ['id', 'file'],
       },
@@ -172,8 +171,8 @@ FOR EACH item, serially:
    - KEEP if it is a durable, generalizable TECHNICAL insight fitting our approved taxonomy domains (see wiki/_meta/tag-taxonomy.md).
    - SKIP if personal/philosophical/non-technical and maps to NO approved tag, OR an ephemeral fact unlikely to stay true (specific prices/salaries/dates with no transferable principle). Report skipped with a one-line reason. Never force a bad tag.
 3. DEDUP (keepers): kb compile --check-dedup "TITLE OR KEY PHRASE" --json
-   - If the item line above shows a "source_class:" value, append --source-class <that value> to the check-dedup command (e.g. --source-class doc). This raises the duplicate threshold for denser sources (doc=0.93, book/paper=0.94). If no source_class was given for the item, omit the flag entirely — it defaults to chat (0.92).
-   - status duplicate (>=0.92, or the source_class-adjusted threshold): SKIP; name the existing duplicate in detail.
+   - If the item line above shows a "source_class:" value, append --source-class <that value> to the check-dedup command (e.g. --source-class doc). This raises the duplicate threshold for denser sources; if no source_class was given for the item, omit the flag entirely — it defaults to chat. The CLI sets the exact per-class thresholds.
+   - status duplicate (>= the source_class-adjusted threshold the CLI reports): SKIP; name the existing duplicate in detail.
    - status similar (0.80-0.91): do NOT write; action=similar, name match+score in detail.
    - status unique (<0.80): write.
    - Also dedup WITHIN your own assigned set: if two of your items are near-identical, write the stronger and mark the other a duplicate.
