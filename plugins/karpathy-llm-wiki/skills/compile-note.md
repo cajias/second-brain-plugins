@@ -61,7 +61,7 @@ Only add wikilinks that are genuinely meaningful -- forced connections are noise
 
 **Always use `kb compile --write-note` to create notes.** Do NOT use the Write/Edit tools to create note files directly.
 
-Why: the CLI emits the canonical 9-field frontmatter schema (`id`, `type`, `knowledge_type`, `status`, `confidence`, `scope`, `tags`, `source`, `created`) with deterministic field order, collision-safe filenames, and taxonomy validation. Writing files directly produces a simplified schema that diverges over time and requires post-hoc migration.
+Why: the CLI emits the canonical frontmatter schema with deterministic field order, collision-safe filenames, and taxonomy validation. The schema is tiered — required fields are `tags`, `source`, `created`, and a knowledge type (via `knowledge_type` or `type`); the recommended fields `id`, `type`, `status`, `confidence`, `scope` round out the canonical set. Writing files directly produces a simplified schema that diverges over time and requires post-hoc migration (`kb migrate-frontmatter`).
 
 ```bash
 kb compile --write-note \

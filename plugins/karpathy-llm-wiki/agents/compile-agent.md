@@ -41,6 +41,18 @@ You are the knowledge compiler. Your job is to process all pending items in the 
 
    Clean up the temp file when done (`rm /tmp/dedup-batch.json`).
 
+   **Source-class tuning for dense items**: While reading each manifest entry (step 2), note its
+   `source_class` field if present (`doc`, `book`, `paper`). Denser sources tolerate more overlap
+   before counting as duplicates (chat=0.92 default, doc=0.93, book/paper=0.94). The batch dedup
+   call above always uses the chat default, so for any candidate whose source item is `doc`/`book`/
+   `paper`, re-check that one idea individually with the per-item flag and trust THAT verdict:
+
+   ```bash
+   kb compile --check-dedup "TITLE OR KEY PHRASE" --source-class <doc|book|paper> --json
+   ```
+
+   Items with no `source_class` (the common case) need no special handling — the batch result stands.
+
 4. **Write notes (with batch-context linking)**: For each non-duplicate idea, invoke
    `search-and-link` to find wikilink targets in the existing wiki, then write the note via the
    `compile-note` skill's writing step. **Maintain a running list of the titles/slugs created so

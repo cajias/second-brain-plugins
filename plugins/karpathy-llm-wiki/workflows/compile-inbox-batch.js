@@ -47,7 +47,9 @@ const DISCOVER_SCHEMA = {
       type: 'array',
       items: {
         type: 'object', additionalProperties: false,
-        properties: { id: { type: 'string' }, file: { type: 'string' } },
+        // source_class (when the manifest entry records it) tunes the dedup duplicate
+        // threshold downstream (chat=0.92 default, doc=0.93, book/paper=0.94).
+        properties: { id: { type: 'string' }, file: { type: 'string' }, source_class: { type: 'string' } },
         required: ['id', 'file'],
       },
     },
@@ -154,11 +156,11 @@ function discoverPrompt() {
 Run: kb compile --list-inbox --json
 Parse the JSON (it is a list of manifest entries OR an object with an "items"/"inbox" array). Filter entries with status == "pending". Take the FIRST ${COUNT} pending entries in their existing order.
 
-Return structured output: items = [{id, file}] for exactly those (up to ${COUNT}) pending entries, and total_pending = the full count of pending entries. Use the manifest "id" (e.g. ingest-xxxxxxxx) and "file" (relative path) fields verbatim. Do NOT modify anything.`
+Return structured output: items = [{id, file, source_class}] for exactly those (up to ${COUNT}) pending entries, and total_pending = the full count of pending entries. Use the manifest "id" (e.g. ingest-xxxxxxxx) and "file" (relative path) fields verbatim. Include "source_class" ONLY when the manifest entry has that field (e.g. "doc", "book", "paper"); OMIT it entirely when the entry has no source_class (those default to chat downstream). Do NOT modify anything.`
 }
 
 function compilePrompt(items) {
-  const list = items.map(it => `- ${it.id} -> ${it.file}`).join('\n')
+  const list = items.map(it => `- ${it.id} -> ${it.file}${it.source_class ? ` (source_class: ${it.source_class})` : ''}`).join('\n')
   return `You are a knowledge-compiler subagent for the llm-wiki (Karpathy-style) knowledge base. Working directory: ${WD}. Run all kb commands from there. The approved tag taxonomy and knowledge_types are defined in wiki/_meta/tag-taxonomy.md — Read that file FIRST and use ONLY the tags and knowledge_types it lists.
 
 You are assigned these ${items.length} inbox items (each raw file is typically an ALREADY-atomized note imported from a foreign "unified-brain" KB: it has frontmatter with knowledge_type/tags/confidence, a title, a body, and a Related/wikilink section whose [[links]] often point to notes that do NOT exist in our wiki):
@@ -170,7 +172,8 @@ FOR EACH item, serially:
    - KEEP if it is a durable, generalizable TECHNICAL insight fitting our approved taxonomy domains (see wiki/_meta/tag-taxonomy.md).
    - SKIP if personal/philosophical/non-technical and maps to NO approved tag, OR an ephemeral fact unlikely to stay true (specific prices/salaries/dates with no transferable principle). Report skipped with a one-line reason. Never force a bad tag.
 3. DEDUP (keepers): kb compile --check-dedup "TITLE OR KEY PHRASE" --json
-   - status duplicate (>=0.92): SKIP; name the existing duplicate in detail.
+   - If the item line above shows a "source_class:" value, append --source-class <that value> to the check-dedup command (e.g. --source-class doc). This raises the duplicate threshold for denser sources (doc=0.93, book/paper=0.94). If no source_class was given for the item, omit the flag entirely — it defaults to chat (0.92).
+   - status duplicate (>=0.92, or the source_class-adjusted threshold): SKIP; name the existing duplicate in detail.
    - status similar (0.80-0.91): do NOT write; action=similar, name match+score in detail.
    - status unique (<0.80): write.
    - Also dedup WITHIN your own assigned set: if two of your items are near-identical, write the stronger and mark the other a duplicate.
