@@ -69,6 +69,29 @@ class TestFrontmatterValidation:
                 assert entry["fields_missing"] == []
                 assert entry["invalid_values"] == {}
 
+    def test_simplified_schema_is_valid(self, wiki_root: Path, monkeypatch):
+        """A note using `type: <knowledge-type>` (no `knowledge_type` field) lints clean."""
+        permanent = wiki_root / "wiki" / "permanent"
+        (permanent / "simplified-schema.md").write_text("""\
+---
+title: Simplified Schema Note
+type: pattern
+tags:
+  - api-design
+source: "raw/inbox/foo.md"
+created: "2026-04-17"
+---
+
+# Simplified Schema
+
+Uses the compact shape where `type` doubles as `knowledge_type`.
+""")
+        data = _lint_json(wiki_root, monkeypatch)
+        entry = next(f for f in data["frontmatter"] if f["file"] == "simplified-schema.md")
+        assert entry["fields_missing"] == []
+        assert entry["invalid_values"] == {}
+        assert "knowledge_type" in entry["fields_present"]
+
     def test_detects_invalid_values(self, wiki_root: Path, monkeypatch):
         permanent = wiki_root / "wiki" / "permanent"
         (permanent / "bad-values.md").write_text("""\

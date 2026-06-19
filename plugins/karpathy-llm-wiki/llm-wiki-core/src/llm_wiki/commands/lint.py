@@ -16,7 +16,12 @@ import typer
 
 from llm_wiki.commands.charts import _generate_all_charts
 from llm_wiki.core.config import WikiConfig, load_config
-from llm_wiki.core.frontmatter import REQUIRED_FIELDS, VALID_VALUES, parse_file
+from llm_wiki.core.frontmatter import (
+    REQUIRED_FIELDS,
+    VALID_VALUES,
+    get_knowledge_type,
+    parse_file,
+)
 from llm_wiki.core.taxonomy import load_approved_tags
 
 
@@ -31,6 +36,17 @@ MAX_TAGS_PER_NOTE = 6
 # ---------------------------------------------------------------------------
 # Scan functions (ported from kb_lint.py)
 # ---------------------------------------------------------------------------
+
+
+def _collect_invalid_values(fm: dict[str, Any]) -> dict[str, Any]:
+    """Return a map of fields whose values fall outside the allowed enum."""
+    invalid: dict[str, Any] = {}
+    for field, allowed in VALID_VALUES.items():
+        if field in fm and fm[field] is not None:
+            val = str(fm[field])
+            if val not in allowed:
+                invalid[field] = {"got": val, "expected": allowed}
+    return invalid
 
 
 def _build_frontmatter_entry(md_file: Path) -> dict[str, Any]:
@@ -51,7 +67,7 @@ def _build_frontmatter_entry(md_file: Path) -> dict[str, Any]:
     }
 
     if not fm:
-        entry["fields_missing"] = REQUIRED_FIELDS[:]
+        entry["fields_missing"] = [*REQUIRED_FIELDS, "knowledge_type"]
         return entry
 
     for field in REQUIRED_FIELDS:
@@ -60,17 +76,18 @@ def _build_frontmatter_entry(md_file: Path) -> dict[str, Any]:
         else:
             entry["fields_missing"].append(field)
 
+    # Either-or rule: knowledge_type may live in the `knowledge_type` key
+    # (canonical schema) or as the value of the `type` key (simplified
+    # schema). If resolvable under either name, treat as present.
+    if get_knowledge_type(fm) is not None:
+        entry["fields_present"].append("knowledge_type")
+    else:
+        entry["fields_missing"].append("knowledge_type")
+
     if isinstance(fm.get("tags"), list):
         entry["tags"] = [str(t) for t in fm["tags"]]
 
-    for field, allowed in VALID_VALUES.items():
-        if field in fm and fm[field] is not None:
-            val = str(fm[field])
-            if val not in allowed:
-                entry["invalid_values"][field] = {
-                    "got": val,
-                    "expected": allowed,
-                }
+    entry["invalid_values"] = _collect_invalid_values(fm)
 
     if len(entry["tags"]) > MAX_TAGS_PER_NOTE:
         entry["invalid_values"]["tags"] = {

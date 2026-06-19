@@ -19,13 +19,13 @@ from llm_wiki.commands.index import index
 from llm_wiki.commands.ingest import ingest
 from llm_wiki.commands.init_cmd import init
 from llm_wiki.commands.lint import lint
+from llm_wiki.commands.migrate_frontmatter import migrate_frontmatter
 from llm_wiki.commands.search import search
 
 
 # `llm_wiki.core.config.load_config` is imported lazily inside `maintenance_enable`
 # to avoid loading config (which may fail with FileNotFoundError) at module import
 # time — every other CLI command imports cli.py via Typer registration.
-
 
 app = typer.Typer(
     name="kb",
@@ -42,6 +42,7 @@ app.command("search")(search)
 app.command("lint")(lint)
 app.command("index")(index)
 app.command("charts")(charts)
+app.command("migrate-frontmatter")(migrate_frontmatter)
 
 # -- Maintenance subcommand group ----------------------------------------------
 
