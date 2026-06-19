@@ -21,6 +21,36 @@ if TYPE_CHECKING:
 SIMILAR_SCORE_THRESHOLD = 0.80
 MATCH_DISPLAY_THRESHOLD = 0.50
 
+# Per-source-class duplicate thresholds. Denser sources (books, papers) tolerate
+# higher overlap before being flagged as duplicates than free-form chat.
+SOURCE_CLASS_THRESHOLDS: dict[str, float] = {
+    "chat": 0.92,
+    "doc": 0.93,
+    "book": 0.94,
+    "paper": 0.94,
+}
+
+
+def resolve_threshold(source_class: str | None) -> float:
+    """Map a source class label to its cosine-similarity duplicate threshold.
+
+    Args:
+        source_class: One of {"chat", "doc", "book", "paper"}, or None/"" for chat default.
+
+    Returns:
+        Cosine threshold above which a candidate is considered a duplicate.
+
+    Raises:
+        ValueError: If source_class is given but not one of the known labels.
+    """
+    if not source_class:
+        return SOURCE_CLASS_THRESHOLDS["chat"]
+    key = source_class.lower()
+    if key not in SOURCE_CLASS_THRESHOLDS:
+        msg = f"unknown source_class {source_class!r}; expected one of {sorted(SOURCE_CLASS_THRESHOLDS)}"
+        raise ValueError(msg)  # message includes the offending value for the CLI user
+    return SOURCE_CLASS_THRESHOLDS[key]
+
 
 def check_duplicate(
     query: str,

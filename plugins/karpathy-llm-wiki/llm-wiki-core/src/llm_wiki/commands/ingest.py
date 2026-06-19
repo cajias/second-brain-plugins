@@ -23,6 +23,7 @@ from urllib.request import Request, urlopen
 import typer
 
 from llm_wiki.core.config import WikiConfig, load_config
+from llm_wiki.core.dedup import SOURCE_CLASS_THRESHOLDS
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +149,7 @@ def _write_meta(dest_path: Path, meta: dict[str, Any]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _ingest_session(source: str, cfg: WikiConfig) -> dict[str, Any]:
+def _ingest_session(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
     """Ingest a Claude Code session log (.jsonl)."""
     source_path = Path(source).resolve()
     if not source_path.exists():
@@ -180,6 +181,7 @@ def _ingest_session(source: str, cfg: WikiConfig) -> dict[str, Any]:
         "source": str(source_path),
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
     }
     _append_manifest(cfg, manifest_entry)
 
@@ -191,7 +193,7 @@ def _ingest_session(source: str, cfg: WikiConfig) -> dict[str, Any]:
     }
 
 
-def _ingest_file(source: str, cfg: WikiConfig) -> dict[str, Any]:
+def _ingest_file(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
     """Ingest a document (PDF, markdown, text, etc.)."""
     source_path = Path(source).resolve()
     if not source_path.exists():
@@ -243,6 +245,7 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict[str, Any]:
         "source": str(source_path),
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
         **pdf_extras_manifest,
     }
     _append_manifest(cfg, manifest_entry)
@@ -255,7 +258,7 @@ def _ingest_file(source: str, cfg: WikiConfig) -> dict[str, Any]:
     }
 
 
-def _ingest_url(source: str, cfg: WikiConfig) -> dict[str, Any]:
+def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
     """Ingest a web article by downloading and extracting text."""
     parsed = urlparse(source)
     if parsed.scheme not in _ALLOWED_URL_SCHEMES:
@@ -300,6 +303,7 @@ def _ingest_url(source: str, cfg: WikiConfig) -> dict[str, Any]:
         "source": source,
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
     }
     _append_manifest(cfg, manifest_entry)
 
@@ -311,7 +315,7 @@ def _ingest_url(source: str, cfg: WikiConfig) -> dict[str, Any]:
     }
 
 
-def _ingest_text(source: str, cfg: WikiConfig) -> dict[str, Any]:
+def _ingest_text(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
     """Ingest a quick text snippet as a timestamped markdown file."""
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
 
@@ -341,6 +345,7 @@ def _ingest_text(source: str, cfg: WikiConfig) -> dict[str, Any]:
         "source": "inline-text",
         "date": meta["date"],
         "status": "pending",
+        "source_class": source_class,
     }
     _append_manifest(cfg, manifest_entry)
 
@@ -406,7 +411,7 @@ def _validate_mode_and_source(mode: str | None, source: str | None) -> tuple[str
     return mode, source
 
 
-def _dispatch_ingest(mode: str, source: str, cfg: WikiConfig) -> dict[str, Any]:
+def _dispatch_ingest(mode: str, source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
     """Dispatch to the right per-mode helper. Caller catches FileNotFoundError/RuntimeError."""
     dispatch = {
         "session": _ingest_session,
@@ -414,7 +419,7 @@ def _dispatch_ingest(mode: str, source: str, cfg: WikiConfig) -> dict[str, Any]:
         "url": _ingest_url,
         "text": _ingest_text,
     }
-    return dispatch[mode](source, cfg)
+    return dispatch[mode](source, cfg, source_class)
 
 
 def _print_ingest_result(result: dict[str, Any], json_output: bool) -> None:
@@ -447,6 +452,11 @@ def ingest(
         "-s",
         help="Source path, URL, or text to ingest.",
     ),
+    source_class: str = typer.Option(
+        "chat",
+        "--source-class",
+        help="Source class for dedup tuning: chat, doc, book, or paper.",
+    ),
     list_pending: bool = typer.Option(
         False,
         "--list",
@@ -477,8 +487,15 @@ def ingest(
 
     valid_mode, valid_source = _validate_mode_and_source(mode, source)
 
+    if source_class.lower() not in SOURCE_CLASS_THRESHOLDS:
+        typer.echo(
+            f"Error: --source-class must be one of {sorted(SOURCE_CLASS_THRESHOLDS)}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     try:
-        result = _dispatch_ingest(valid_mode, valid_source, cfg)
+        result = _dispatch_ingest(valid_mode, valid_source, cfg, source_class.lower())
     except (FileNotFoundError, RuntimeError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1) from e

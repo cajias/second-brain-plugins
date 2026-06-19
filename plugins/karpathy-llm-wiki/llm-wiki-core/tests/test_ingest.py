@@ -307,3 +307,39 @@ class TestIngestValidation:
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["ingest", "--mode", "invalid-mode", "--source", "test"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Source class
+# ---------------------------------------------------------------------------
+
+
+class TestIngestSourceClass:
+    """``kb ingest --source-class X`` records X on the manifest entry."""
+
+    def test_book_source_class_persisted_on_manifest(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "chapter.md", "# Chapter 1\n\nbody")
+        result = runner.invoke(
+            app,
+            ["ingest", "--mode", "file", "--source", str(src), "--source-class", "book"],
+        )
+        assert result.exit_code == 0, result.output
+        manifest = _read_manifest(wiki_root)
+        assert manifest[-1]["source_class"] == "book"
+
+    def test_default_source_class_is_chat(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "msg.txt", "a message")
+        runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        manifest = _read_manifest(wiki_root)
+        assert manifest[-1].get("source_class", "chat") == "chat"
+
+    def test_invalid_source_class_errors(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "x.txt", "x")
+        result = runner.invoke(
+            app,
+            ["ingest", "--mode", "file", "--source", str(src), "--source-class", "podcast"],
+        )
+        assert result.exit_code != 0
