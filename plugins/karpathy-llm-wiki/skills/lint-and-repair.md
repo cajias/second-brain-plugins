@@ -26,19 +26,34 @@ Returns structured data with these sections:
 
 ## Frontmatter Validation
 
-Every note must have these required fields:
+Frontmatter follows a **tiered** model. Lint only errors on the required tier; the
+recommended tier is auto-repairable but does not block a clean lint.
+
+**Required** (a missing one is a lint error):
+
+| Field | Valid values | Default if missing |
+|-------|-------------|-------------------|
+| knowledge type | fact, pattern, decision, correction, idea, design, exploration | Flag for review |
+| `tags` | Up to 6 from approved taxonomy | Flag for review |
+| `source` | Free text | Flag for review |
+| `created` | `YYYY-MM-DD` | File modification date |
+
+The knowledge type is satisfied by **either** `knowledge_type` **or** `type` holding a
+knowledge-type value (simplified schema where `type` doubles as `knowledge_type`).
+
+**Recommended** (canonical schema, but absence is not a lint error):
 
 | Field | Valid values | Default if missing |
 |-------|-------------|-------------------|
 | `id` | `perm-YYYYMMDD-XXXXX` | Generate from date + random hex |
 | `type` | `permanent` | `permanent` |
-| `knowledge_type` | fact, pattern, decision, correction, idea, design, exploration | Flag for review |
-| `status` | accepted, pending, rejected | `pending` |
+| `status` | pending, approved, archived | `pending` |
 | `confidence` | high, medium, low | `low` |
 | `scope` | universal, project, temporal | `universal` |
-| `tags` | Up to 6 from approved taxonomy | Flag for review |
-| `source` | Free text | Flag for review |
-| `created` | `YYYY-MM-DD` | File modification date |
+
+Enum values above and the 6-tag cap are still strictly validated whenever the field is
+present. Legacy simplified-schema notes can be upgraded to the canonical schema with
+`kb migrate-frontmatter` (dry-run by default; add `--apply` to write changes).
 
 ## Tag Compliance
 

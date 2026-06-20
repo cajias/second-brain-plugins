@@ -93,7 +93,9 @@ function ingestPrompt(urls) {
   return `You ingest web URLs into the llm-wiki inbox. Working directory: ${WD}. Run kb from there. Do this STRICTLY SERIALLY — the inbox manifest is non-atomic; never run two kb ingest at once.
 
 For EACH url below, in order, run:
-  kb ingest --mode url --source "<url>"
+  kb ingest --mode url --source "<url>" --source-class doc
+(--source-class doc raises the dedup duplicate threshold to 0.93 — appropriate for web-cited
+external sources, which are denser and more self-contained than free-form chat.)
 Capture the assigned manifest id (e.g. ingest-xxxxxxxx) and destination path from the output. If a url fails (fetch error or non-zero exit), record ok=false with a short error and CONTINUE to the next — do not abort the batch.
 
 URLs:

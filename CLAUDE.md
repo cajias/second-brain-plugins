@@ -59,7 +59,7 @@ All paths resolve from `.kb-config.yml` found by walking up from cwd. `core/conf
 `core/dedup.py` — three tiers: ≥0.92 = duplicate (skip), 0.80–0.91 = similar (flag), <0.80 = unique (write). These thresholds are hardcoded, not configurable.
 
 ### Frontmatter Contract
-Every permanent note requires exactly 9 YAML fields: `id`, `type`, `knowledge_type`, `status`, `confidence`, `scope`, `tags`, `source`, `created`. `core/frontmatter.py` enforces this. `core/taxonomy.py` validates tags against `wiki/_meta/tag-taxonomy.md`.
+`core/frontmatter.py` enforces a tiered schema. **Required** (lint errors if absent): `tags`, `source`, `created`, plus a knowledge type satisfied by either `knowledge_type` or `type`. **Recommended** (canonical schema, auto-repairable, not lint errors): `id`, `type`, `status`, `confidence`, `scope`. Enum values and the 6-tag cap are still strictly validated when present. `core/taxonomy.py` validates tags against `wiki/_meta/tag-taxonomy.md`. Legacy simplified-schema notes upgrade to canonical via `kb migrate-frontmatter` (dry-run default, `--apply` to write).
 
 ### CLI Subcommands
 `cli.py` registers: `init`, `ingest`, `compile`, `search`, `lint`, `index`, `charts`, plus `maintenance` subgroup (enable/disable/status for cron). Each command module lives in `commands/` and is a standalone Typer function.
