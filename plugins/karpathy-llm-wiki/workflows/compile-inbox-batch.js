@@ -285,8 +285,14 @@ const similar = allResults.filter(r => r.action === 'similar')
 log(`Compile done: ${written.length} written, ${skipped.length} skipped, ${duplicate.length} duplicate, ${similar.length} similar`)
 
 phase('Finalize')
-const allIds = items.map(i => i.id)
-const fin = await agent(finalizePrompt(allIds), { label: 'finalize', phase: 'Finalize', schema: FINALIZE_SCHEMA })
+// Mark processed ONLY items whose compile shard returned a result. Items in a
+// failed/killed shard are absent from allResults, so they stay pending and a
+// later batch recompiles them (self-healing) — prevents marking-without-writing.
+const handledIds = allResults.map(r => r.id).filter(Boolean)
+if (handledIds.length < items.length) {
+  log(`WARNING: ${items.length - handledIds.length} item(s) in failed compile shards left PENDING (not marked) — a later batch will recompile them`)
+}
+const fin = await agent(finalizePrompt(handledIds), { label: 'finalize', phase: 'Finalize', schema: FINALIZE_SCHEMA })
 log(`Finalized: pending now ${fin ? fin.pending_after : '?'}`)
 
 phase('Find Orphans')
