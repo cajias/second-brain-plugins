@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -144,11 +146,21 @@ def wiki_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def wiki_root_bare(tmp_path: Path) -> Path:
-    """Return a completely empty temp directory (no .kb-config.yml)."""
-    root = tmp_path / "empty-project"
+def wiki_root_bare() -> Path:
+    """Return a completely empty temp directory (no .kb-config.yml).
+
+    Intentionally rooted at a system temp dir (e.g. /tmp) rather than
+    pytest's ``tmp_path``, which can resolve inside the developer's vault
+    (e.g. /Users/rc/Documents/Obsidian Vault/…) when pytest is invoked from
+    within the project.  Walking up from inside the vault would find the real
+    .kb-config.yml and silently satisfy tests that expect a "no config" error.
+    Rooting under /tmp guarantees no ancestor config exists.
+    """
+    base = Path(tempfile.mkdtemp(prefix="kb_bare_", dir="/tmp"))
+    root = base / "empty-project"
     root.mkdir()
-    return root
+    yield root
+    shutil.rmtree(base, ignore_errors=True)
 
 
 @pytest.fixture
