@@ -151,3 +151,69 @@ class TestSearchErrors:
         monkeypatch.chdir(wiki_root_bare)
         result = runner.invoke(app, ["search", "anything"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Filter predicate builder
+# ---------------------------------------------------------------------------
+
+
+class TestFilterPredicate:
+    """Unit tests for ``_build_filter_predicate`` — pure SQL predicate builder."""
+
+    def test_no_filters_returns_none(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate(None, None, None, None, None) is None
+
+    def test_knowledge_type_clause(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate("tool", None, None, None, None) == "knowledge_type = 'tool'"
+
+    def test_single_tag_via_array_has_any(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate(None, ["tool-cli"], None, None, None) == "array_has_any(tags, ['tool-cli'])"
+
+    def test_repeated_tags_anded_via_array_has_any(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        pred = _build_filter_predicate(None, ["tool-cli", "phase-testing"], None, None, None)
+        assert pred == "array_has_any(tags, ['tool-cli']) AND array_has_any(tags, ['phase-testing'])"
+
+    def test_type_clause(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate(None, None, "permanent", None, None) == "type = 'permanent'"
+
+    def test_scope_clause(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate(None, None, None, "universal", None) == "scope = 'universal'"
+
+    def test_combined_clauses_anded(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        pred = _build_filter_predicate("tool", ["tool-cli"], "permanent", "universal", None)
+        assert pred == (
+            "knowledge_type = 'tool' AND array_has_any(tags, ['tool-cli']) "
+            "AND type = 'permanent' AND scope = 'universal'"
+        )
+
+    def test_where_passthrough_appended(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate("tool", None, None, None, "confidence > 0.5") == (
+            "knowledge_type = 'tool' AND (confidence > 0.5)"
+        )
+
+    def test_where_only(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate(None, None, None, None, "confidence > 0.5") == "(confidence > 0.5)"
+
+    def test_single_quote_escaped(self):
+        from llm_wiki.core.embeddings import _build_filter_predicate
+
+        assert _build_filter_predicate("o'brien", None, None, None, None) == "knowledge_type = 'o''brien'"

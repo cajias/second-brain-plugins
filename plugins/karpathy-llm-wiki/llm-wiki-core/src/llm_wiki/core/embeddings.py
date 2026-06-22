@@ -57,6 +57,38 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [emb.tolist() for emb in embeddings]
 
 
+def _sql_literal(value: str) -> str:
+    """Single-quote a string for a DataFusion predicate, escaping embedded quotes."""
+    escaped = value.replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _build_filter_predicate(
+    knowledge_type: str | None,
+    tags: list[str] | None,
+    type_: str | None,
+    scope: str | None,
+    where: str | None,
+) -> str | None:
+    """Build a DataFusion predicate AND-joining the requested filters.
+
+    Repeated tags are AND-chained via ``array_has_any`` (token-exact list
+    membership). ``where`` is appended verbatim, parenthesized. Returns None
+    when no filter is requested.
+    """
+    clauses: list[str] = []
+    if knowledge_type:
+        clauses.append(f"knowledge_type = {_sql_literal(knowledge_type)}")
+    clauses.extend(f"array_has_any(tags, [{_sql_literal(tag)}])" for tag in tags or [])
+    if type_:
+        clauses.append(f"type = {_sql_literal(type_)}")
+    if scope:
+        clauses.append(f"scope = {_sql_literal(scope)}")
+    if where:
+        clauses.append(f"({where})")
+    return " AND ".join(clauses) if clauses else None
+
+
 def search_index(
     db_path: Path,
     table_name: str,
