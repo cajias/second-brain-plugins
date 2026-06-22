@@ -19,6 +19,7 @@ An open enum defining what kind of knowledge a note represents. Validated by `/k
 | `idea` | Unvalidated concept worth tracking — may become a pattern, decision, or dead end |
 | `design` | Architectural or system design — structure, components, interfaces, data flow |
 | `exploration` | Open-ended investigation or question — synthesized from queries, research, or curiosity |
+| `tool` | Library/framework/service/CLI reference — captures how a tool works, when to use it, and tradeoffs |
 
 ## Approved Tags
 
@@ -43,6 +44,36 @@ All wiki notes must use tags from this approved list. Maximum 6 tags per note. `
 | `documentation` | Technical writing, API docs, architecture decision records, READMEs |
 | `error-handling` | Exception strategies, retry policies, circuit breakers, graceful degradation |
 | `data-modeling` | Schema design, normalization, domain modeling, event sourcing |
+
+### Tool Tags
+
+| Tag | Description |
+|-----|-------------|
+| `tool-framework` | Tool type: framework |
+| `tool-library` | Tool type: library |
+| `tool-cli` | Tool type: CLI |
+| `tool-mcp-server` | Tool type: MCP server |
+| `tool-agent` | Tool type: agent |
+| `tool-skill` | Tool type: skill |
+| `tool-plugin` | Tool type: plugin |
+| `tool-sdk` | Tool type: SDK |
+| `tool-service` | Tool type: service |
+| `tool-dataset` | Tool type: dataset |
+
+### SDLC Phase Tags
+
+| Tag | Description |
+|-----|-------------|
+| `phase-planning` | SDLC phase: planning |
+| `phase-design` | SDLC phase: design |
+| `phase-implementation` | SDLC phase: implementation |
+| `phase-code-review` | SDLC phase: code review |
+| `phase-testing` | SDLC phase: testing |
+| `phase-debugging` | SDLC phase: debugging |
+| `phase-deployment` | SDLC phase: deployment |
+| `phase-observability` | SDLC phase: observability |
+| `phase-security` | SDLC phase: security |
+| `phase-docs` | SDLC phase: docs |
 
 ## Adding New Tags
 

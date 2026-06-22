@@ -251,6 +251,17 @@ class TestWriteNote:
         result = runner.invoke(app, ["compile", "--write-note", "--title", "Only Title"])
         assert result.exit_code != 0
 
+    def test_tool_tags_accepted_by_taxonomy(self, wiki_root: Path, monkeypatch):
+        """Tool knowledge_type + tool-cli/phase-testing tags must not warn."""
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(
+            app,
+            self._write_note_args(**{"knowledge-type": "tool", "tags": "tool-cli,phase-testing", "title": "Some Tool"}),
+        )
+        assert result.exit_code == 0
+        assert "not in approved" not in result.stdout.lower()
+        assert "not in approved list" not in result.stdout.lower()
+
 
 # ---------------------------------------------------------------------------
 # Mark processed

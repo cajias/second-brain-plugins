@@ -78,6 +78,7 @@ updated: "2026-04-09"
 | `idea` | Unvalidated concept worth tracking |
 | `design` | Architectural or system design |
 | `exploration` | Open-ended investigation |
+| `tool` | Library/framework/service/CLI reference |
 
 ## Approved Tags
 
@@ -94,6 +95,26 @@ updated: "2026-04-09"
 | `code-quality` | Readability, refactoring |
 | `databases` | SQL, NoSQL |
 | `devops` | CI/CD |
+| `tool-framework` | Tool type: framework |
+| `tool-library` | Tool type: library |
+| `tool-cli` | Tool type: CLI |
+| `tool-mcp-server` | Tool type: MCP server |
+| `tool-agent` | Tool type: agent |
+| `tool-skill` | Tool type: skill |
+| `tool-plugin` | Tool type: plugin |
+| `tool-sdk` | Tool type: SDK |
+| `tool-service` | Tool type: service |
+| `tool-dataset` | Tool type: dataset |
+| `phase-planning` | SDLC phase: planning |
+| `phase-design` | SDLC phase: design |
+| `phase-implementation` | SDLC phase: implementation |
+| `phase-code-review` | SDLC phase: code review |
+| `phase-testing` | SDLC phase: testing |
+| `phase-debugging` | SDLC phase: debugging |
+| `phase-deployment` | SDLC phase: deployment |
+| `phase-observability` | SDLC phase: observability |
+| `phase-security` | SDLC phase: security |
+| `phase-docs` | SDLC phase: docs |
 """
 
 
