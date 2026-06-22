@@ -49,7 +49,6 @@ def _short_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
-
 class _HTMLTextExtractor(HTMLParser):
     """Minimal HTML-to-text converter."""
 
