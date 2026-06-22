@@ -285,8 +285,17 @@ const similar = allResults.filter(r => r.action === 'similar')
 log(`Compile done: ${written.length} written, ${skipped.length} skipped, ${duplicate.length} duplicate, ${similar.length} similar`)
 
 phase('Finalize')
-const allIds = items.map(i => i.id)
-const fin = await agent(finalizePrompt(allIds), { label: 'finalize', phase: 'Finalize', schema: FINALIZE_SCHEMA })
+// Mark items by their AUTHORITATIVE discover-id for any chunk whose agent
+// returned a result (non-null). A null result = that shard died -> its items
+// stay pending (self-healing). Do NOT trust agent-echoed result.id: agents
+// sometimes echo the filename instead of the ingest-id, silently breaking
+// mark-processed (observed: a 31-item batch stuck at pending until this fix).
+const handledIds = []
+chunks.forEach((c, idx) => { if (compileResults[idx]) for (const it of c) handledIds.push(it.id) })
+if (handledIds.length < items.length) {
+  log(`WARNING: ${items.length - handledIds.length} item(s) in failed compile shards left PENDING (not marked) — a later batch will recompile them`)
+}
+const fin = await agent(finalizePrompt(handledIds), { label: 'finalize', phase: 'Finalize', schema: FINALIZE_SCHEMA })
 log(`Finalized: pending now ${fin ? fin.pending_after : '?'}`)
 
 phase('Find Orphans')
