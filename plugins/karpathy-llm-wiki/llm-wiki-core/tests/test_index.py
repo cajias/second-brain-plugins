@@ -130,6 +130,25 @@ class TestIndexStats:
 
 
 # ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+
+class TestIndexSchema:
+    """The seeded empty index uses a list tags column plus type/scope."""
+
+    def test_empty_schema_tags_is_list(self):
+        import pyarrow as pa
+
+        from llm_wiki.commands.index import _empty_index_schema
+
+        schema = _empty_index_schema()
+        assert schema.field("tags").type == pa.list_(pa.utf8())
+        assert schema.field("type").type == pa.utf8()
+        assert schema.field("scope").type == pa.utf8()
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
