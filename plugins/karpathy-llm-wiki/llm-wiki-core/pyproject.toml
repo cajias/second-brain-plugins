@@ -11,6 +11,7 @@ dependencies = [
     "pyyaml>=6.0",
     "matplotlib>=3.7",
     "typer[all]>=0.12",
+    "trafilatura>=1.12",
 ]
 
 [project.optional-dependencies]
@@ -78,7 +79,7 @@ indent-style = "space"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["lancedb.*", "sentence_transformers.*", "matplotlib.*", "pyarrow.*", "pandas.*", "marker.*", "yaml"]
+module = ["lancedb.*", "sentence_transformers.*", "matplotlib.*", "pyarrow.*", "pandas.*", "marker.*", "yaml", "trafilatura.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
