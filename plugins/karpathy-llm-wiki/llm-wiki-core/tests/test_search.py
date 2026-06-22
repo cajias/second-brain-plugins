@@ -217,3 +217,89 @@ class TestFilterPredicate:
         from llm_wiki.core.embeddings import _build_filter_predicate
 
         assert _build_filter_predicate("o'brien", None, None, None, None) == "knowledge_type = 'o''brien'"
+
+
+# ---------------------------------------------------------------------------
+# search_index filter params + filter-only path
+# ---------------------------------------------------------------------------
+
+
+class TestSearchIndexFilters:
+    """Tests for ``search_index`` frontmatter filters and filter-only path."""
+
+    def test_filter_only_returns_all_matching(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Filter-only (query=None) should return ALL rows matching the predicate."""
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        db = populated_wiki / ".lancedb"
+        # populated_wiki has two knowledge_type=pattern notes
+        res = search_index(db, "notes", query=None, knowledge_type="pattern")
+        kinds = {r["knowledge_type"] for r in res}
+        assert kinds == {"pattern"}
+        assert len(res) == 2
+
+    def test_filter_only_score_is_none(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Filter-only results must have score=None (no semantic ranking)."""
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        res = search_index(populated_wiki / ".lancedb", "notes", query=None, knowledge_type="pattern")
+        assert res
+        for r in res:
+            assert r["score"] is None
+
+    def test_tags_returned_as_list(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Tags in filter-only results must be a plain Python list."""
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        res = search_index(populated_wiki / ".lancedb", "notes", query=None, knowledge_type="idea")
+        assert res
+        assert isinstance(res[0]["tags"], list)
+        assert res[0]["tags"] == ["llm"]
+
+    def test_and_tag_filter(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Multiple tags must be AND-filtered (narrows the result set)."""
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        res = search_index(populated_wiki / ".lancedb", "notes", query=None, tags=["security", "authentication"])
+        assert len(res) == 1  # only token-refresh-strategy has both
+
+    def test_vector_plus_filter(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Vector search with a filter should return scored results matching the predicate."""
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        res = search_index(populated_wiki / ".lancedb", "notes", query="authentication", knowledge_type="concept")
+        for r in res:
+            assert r["knowledge_type"] == "concept"
+            assert r["score"] is not None
+            assert 0.0 <= r["score"] <= 1.0
+
+    def test_empty_result_set(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Filtering on a knowledge_type with no matches returns an empty list."""
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        res = search_index(populated_wiki / ".lancedb", "notes", query=None, knowledge_type="nonexistent_type")
+        assert res == []
+
+    def test_query_none_no_filters_returns_all(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """query=None with no filters returns all rows (unscored)."""
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        res = search_index(populated_wiki / ".lancedb", "notes", query=None)
+        # populated_wiki has notes; we get them all back unscored
+        assert len(res) > 0
+        for r in res:
+            assert r["score"] is None
