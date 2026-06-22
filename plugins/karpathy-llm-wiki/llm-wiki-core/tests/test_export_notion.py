@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from typer.testing import CliRunner
 
-from llm_wiki.cli import app  # noqa: F401
+from llm_wiki.cli import app
 from llm_wiki.commands.export_notion import (
     _build_manifest,
     _build_sources,
@@ -356,3 +356,40 @@ def test_missing_manifest_yields_null_source_refs(populated_wiki: Path) -> None:
     # Notes that HAVE a source string are still listed as unmatched.
     sourced = [n["slug"] for n in manifest["notes"] if n["source"].strip()]
     assert set(sourced) == set(manifest["unmatched_sources"])
+
+
+def test_empty_wiki_yields_empty_manifest(wiki_root: Path) -> None:
+    cfg = load_config(wiki_root)
+    manifest = _build_manifest(cfg)
+    assert manifest == {
+        "notes": [],
+        "dangling": [],
+        "sources": [],
+        "unmatched_sources": [],
+    }
+
+
+def test_export_notion_cli_stdout(populated_wiki: Path, monkeypatch) -> None:
+    monkeypatch.chdir(populated_wiki)
+    result = runner.invoke(app, ["export-notion"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    slugs = {n["slug"] for n in payload["notes"]}
+    assert {"api-gateway-auth-pattern", "token-refresh-strategy", "orphan-note"} <= slugs
+
+
+def test_export_notion_cli_writes_out_file(populated_wiki: Path, monkeypatch) -> None:
+    monkeypatch.chdir(populated_wiki)
+    result = runner.invoke(app, ["export-notion", "--out", "output/notion-manifest.json"])
+    assert result.exit_code == 0, result.stdout
+    written = (populated_wiki / "output" / "notion-manifest.json").read_text(encoding="utf-8")
+    payload = json.loads(written)
+    assert any(n["slug"] == "api-gateway-auth-pattern" for n in payload["notes"])
+    assert "Wrote" in result.stdout
+
+
+def test_export_notion_cli_no_config(wiki_root_bare: Path, monkeypatch) -> None:
+    monkeypatch.chdir(wiki_root_bare)
+    result = runner.invoke(app, ["export-notion"])
+    assert result.exit_code == 1
+    assert "Error:" in result.stdout or "Error:" in (result.stderr or "")
