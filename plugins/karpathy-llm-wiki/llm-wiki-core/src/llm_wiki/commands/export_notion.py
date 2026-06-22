@@ -26,9 +26,6 @@ from llm_wiki.core.frontmatter import get_knowledge_type, parse_file
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Frontmatter fields copied through to the manifest as scalars.
-_SCALAR_FIELDS = ("status", "confidence", "scope", "source")
-
 # Leading "# Title" heading at the very start of a note body.
 _H1_PATTERN = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 
