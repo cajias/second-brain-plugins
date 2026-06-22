@@ -974,7 +974,7 @@ A. Ensure the sources database titled exactly "${SOURCES_DB_TITLE}":
 1. notion-search for a database titled exactly "${SOURCES_DB_TITLE}". If found, capture its id and set sources_created=false. Do NOT recreate or alter it.
 2. If not found, notion-create-database titled "${SOURCES_DB_TITLE}" with these properties, then set sources_created=true:
    - Name: title (the source string)
-   - Source: url (the source string; plain text if not an http(s) URL)
+   - Source URL: url (the external source link; plain text if not an http(s) URL)
    - ingest_id: rich_text (hidden join key; the upsert key; never shown to the user)
    - Type: select with options: session, file, url, text (other values auto-create on first use)
    - Class: select (leave options empty; they auto-create on first use)
@@ -992,7 +992,6 @@ B. Ensure the notes database titled exactly "${DB_TITLE}":
    - Confidence: select with options: high, medium, low
    - Scope: select with options: universal, project, temporal
    - Tags: multi_select (leave options empty; they auto-create on first use)
-   - Source: url
    - Created: date
    - Links: relation pointing to THIS SAME database (a self-relation); enable the auto-created reverse "Related to" back-link
    - Source: relation pointing to the "${SOURCES_DB_TITLE}" database (the sources database id from step A); enable the auto-created reverse back-link so each source row lists every note derived from it
@@ -1006,7 +1005,7 @@ function sourceUpsertPrompt(sourcesDatabaseId, sources) {
 
 For EACH source below (one row per ingestion event; the upsert key is ingest_id):
 1. notion-query-data-sources on database ${sourcesDatabaseId} filtering the "ingest_id" rich_text property equals the source's ingest_id.
-2. If a row matches, notion-update-page: set Name=source, Source (url; if not an http(s) URL store it as a plain value anyway), Type, Class, Ingested (date), Status, Archived (the file path). Record action="updated".
+2. If a row matches, notion-update-page: set Name=source, Source URL (url; if not an http(s) URL store it as a plain value anyway), Type, Class, Ingested (date), Status, Archived (the file path). Record action="updated".
 3. If no row matches, notion-create-pages in database ${sourcesDatabaseId} with the same properties. Always set the hidden "ingest_id" property to the source's ingest_id. Record action="created".
 4. If a source fails, record ok=false with a short error and CONTINUE.
 
@@ -1017,14 +1016,14 @@ Return structured output { results: [ {ingest_id, page_id, action, ok, error} ] 
 }
 
 function upsertPrompt(databaseId, notes) {
-  const list = notes.map(n => `- slug=${n.slug} | title=${JSON.stringify(n.title)} | type=${n.knowledge_type || ''} | status=${n.status || ''} | confidence=${n.confidence || ''} | scope=${n.scope || ''} | tags=${JSON.stringify(n.tags || [])} | source=${JSON.stringify(n.source || '')} | created=${n.created || ''}`).join('\n')
+  const list = notes.map(n => `- slug=${n.slug} | title=${JSON.stringify(n.title)} | type=${n.knowledge_type || ''} | status=${n.status || ''} | confidence=${n.confidence || ''} | scope=${n.scope || ''} | tags=${JSON.stringify(n.tags || [])} | created=${n.created || ''}`).join('\n')
   const bodies = notes.map(n => `### slug=${n.slug}\n${n.body_md || ''}`).join('\n\n---\n\n')
   return `You upsert pages into the Notion database id ${databaseId}. Load Notion tools in ONE ToolSearch call: "${NOTION_TOOLS}". Do NOT set the Links relation in this pass — relations are wired in a later pass.
 
 For EACH note below:
 1. notion-query-data-sources on database ${databaseId} filtering the "slug" rich_text property equals the note's slug.
-2. If a page matches, notion-update-page: set Name=title, Type, Status, Confidence, Scope, Tags (multi-select), Source (url; if not an http(s) URL store it as a plain rich_text-style value in the Source field anyway), Created (date), and replace the page body with the markdown for that slug. Record action="updated".
-3. If no page matches, notion-create-pages in database ${databaseId} with the same properties and the markdown body. Always set the hidden "slug" property to the note's slug. Record action="created".
+2. If a page matches, notion-update-page: set Name=title, Type, Status, Confidence, Scope, Tags (multi-select), Created (date), and replace the page body with the markdown for that slug. Record action="updated". Do NOT set any raw "Source" URL/text property — the note's external origin is reached via the Source relation (wired in the relations pass).
+3. If no page matches, notion-create-pages in database ${databaseId} with the same properties and the markdown body. Always set the hidden "slug" property to the note's slug. Record action="created". Do NOT set any raw "Source" URL/text property.
 4. If a note fails, record ok=false with a short error and CONTINUE.
 
 Note properties:

@@ -106,8 +106,10 @@ Present a summary using the workflow's return value:
   and reported; they are never fatal.
 - The note→source link is **best-effort**: a note's free-text `source` is matched
   against the ingest manifest by normalized string. A note whose `source` matches
-  nothing gets no `Source` relation (its raw source text is still stored) and is
-  counted under "unmatched source".
+  nothing gets no `Source` relation and is counted under "unmatched source". The
+  notes DB does **not** store a raw "Source" URL property — the note's external
+  origin is reached via the **`Source` relation** → the "LLM Wiki Sources" row,
+  which holds the external link as the "Source URL" property.
 - If `raw/inbox/.manifest.json` is absent, there are simply no source rows and no
   `Source` relations — not an error.
 - Deleted source notes (and removed manifest entries) leave their Notion page or

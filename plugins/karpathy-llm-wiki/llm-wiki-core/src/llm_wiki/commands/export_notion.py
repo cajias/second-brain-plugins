@@ -123,6 +123,7 @@ def _match_source_ref(note_source: str, sources: list[dict[str, Any]]) -> str | 
     matches = [s for s in sources if s.get("source") and _normalize_source(str(s["source"])) == target]
     if not matches:
         return None
+    # Relies on ISO-8601 date strings being lexicographically sortable; a non-ISO date format would break the latest-wins tie-break.
     best = max(matches, key=lambda s: str(s.get("date") or ""))
     ingest_id = best.get("ingest_id")
     return str(ingest_id) if ingest_id is not None else None

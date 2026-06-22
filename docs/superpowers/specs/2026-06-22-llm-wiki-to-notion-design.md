@@ -158,7 +158,6 @@ Output (`--out manifest.json`, or stdout):
 | `confidence`     | Confidence      | Select        | high / medium / low |
 | `scope`          | Scope           | Select        | universal / project / temporal |
 | `tags`           | Tags            | Multi-select  | seeded from `wiki/_meta/tag-taxonomy.md`; ≤6 |
-| `source`         | Source          | URL           | plain text if not a URL |
 | `created`        | Created         | Date          | |
 | `links`          | **Links**       | **Relation**  | **self-relation** → same DB; back-links auto-created |
 | `source_ref`     | **Source**      | **Relation**  | → "LLM Wiki Sources" DB; many notes → one source; reverse back-link auto-created. Unset when `source_ref` is `null`. |
@@ -166,11 +165,16 @@ Output (`--out manifest.json`, or stdout):
 
 Select option values come from the enums in `core/frontmatter.py:VALID_VALUES`.
 
+The notes DB does **not** store a raw "Source" URL/text property. A note's external
+origin is reached via the **`Source` relation** → the ingested-docs (Sources DB) row,
+which holds the external link as "Source URL". The note's raw `source` frontmatter
+string remains in the markdown as the single source of truth; it is used only for
+best-effort matching at export time and is not written as a notes-DB property.
+
 The **`Source` relation** is the feature's whole point: Notion auto-creates the
 reverse back-link on the target source row, so each source page lists every wiki
 note derived from it. The relation is set only when `source_ref` is non-null; a
-note that matched nothing has no `Source` relation (its raw `source` text is
-still stored in the `Source` URL/text property).
+note that matched nothing has no `Source` relation.
 
 ### 2a. Property mapping (Notion "LLM Wiki Sources" database)
 
@@ -180,7 +184,7 @@ ingestion event**. Each manifest field maps as follows:
 | Manifest field | Notion property | Notion type | Notes |
 |----------------|-----------------|-------------|-------|
 | `source`       | Name            | Title       | Page title |
-| `source`       | Source          | URL         | plain text if not a URL |
+| `source`       | Source URL      | URL         | the external source link; plain text if not a URL |
 | `id`           | `ingest_id`     | Text        | hidden join key; upsert key |
 | `type`         | Type            | Select      | session / file / url / text / … (pass through; `artifact`/`web` also seen) |
 | `source_class` | Class           | Select      | chat / web / … |
