@@ -24,6 +24,7 @@ from llm_wiki.core.embeddings import (
     set_last_index_time,
 )
 from llm_wiki.core.frontmatter import parse_file
+from llm_wiki.core.tags import normalize_tags
 
 
 if TYPE_CHECKING:
@@ -49,11 +50,9 @@ def _collect_md_files(permanent_dir: Path) -> list[Path]:
     return sorted(permanent_dir.glob("**/*.md"))
 
 
-def _normalize_tags(tags: object) -> str:
-    """Serialize a tags value (list or scalar) into a CSV string for storage."""
-    if isinstance(tags, list):
-        return ",".join(str(t) for t in tags)
-    return str(tags) if tags else ""
+def _tags_csv(tags: object) -> str:
+    """Serialize a tags value into a CSV string for the (current) utf8 column."""
+    return ",".join(normalize_tags(tags))
 
 
 def _normalize_confidence(raw: object) -> float:
@@ -80,7 +79,7 @@ def _build_record(
         "id": metadata.get("id", filepath.stem),
         "title": metadata.get("title", filepath.stem),
         "knowledge_type": metadata.get("knowledge_type", "unknown"),
-        "tags": _normalize_tags(metadata.get("tags", [])),
+        "tags": _tags_csv(metadata.get("tags", [])),
         "confidence": _normalize_confidence(metadata.get("confidence", 0.0)),
         "source": metadata.get("source", ""),
         "created": str(metadata.get("created", "")),
