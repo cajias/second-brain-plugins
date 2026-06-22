@@ -7,6 +7,10 @@ description: Reusable skill for extracting atomic ideas from raw documents, dedu
 
 Shared knowledge for turning raw content into atomic wiki notes. Used by `/kb-compile` (interactively) and `compile-agent` (autonomously).
 
+> **Tool items:** If the inbox entry's `source_class` is `tool` (one URL = one tool),
+> do NOT extract atomic ideas — use the `compile-tool` skill instead (one
+> `knowledge_type: tool` note, classified by one `tool-*` + `phase-*` tags).
+
 ## Extracting Atomic Ideas
 
 Analyze raw content and extract atomic ideas. Each idea must be:

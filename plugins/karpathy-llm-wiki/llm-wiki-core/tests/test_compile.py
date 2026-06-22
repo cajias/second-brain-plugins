@@ -235,11 +235,32 @@ class TestWriteNote:
         assert result.exit_code == 0
         assert "dry run" in result.stdout.lower()
 
+    def test_write_note_uses_canonical_dump(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        runner.invoke(app, self._write_note_args(tags="architecture,api-design"))
+        permanent = wiki_root / "wiki" / "permanent"
+        content = next(permanent.glob("*.md")).read_text()
+        assert content.startswith("---\n")
+        assert "knowledge_type: pattern\n" in content
+        assert "tags:\n  - architecture\n  - api-design\n" in content
+        assert 'source: "session-test"\n' in content
+
     def test_missing_fields_error(self, wiki_root: Path, monkeypatch):
         """--write-note without all required fields should error."""
         monkeypatch.chdir(wiki_root)
         result = runner.invoke(app, ["compile", "--write-note", "--title", "Only Title"])
         assert result.exit_code != 0
+
+    def test_tool_tags_accepted_by_taxonomy(self, wiki_root: Path, monkeypatch):
+        """Tool knowledge_type + tool-cli/phase-testing tags must not warn."""
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(
+            app,
+            self._write_note_args(**{"knowledge-type": "tool", "tags": "tool-cli,phase-testing", "title": "Some Tool"}),
+        )
+        assert result.exit_code == 0
+        assert "not in approved" not in result.stdout.lower()
+        assert "not in approved list" not in result.stdout.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -343,3 +343,94 @@ class TestIngestSourceClass:
             ["ingest", "--mode", "file", "--source", str(src), "--source-class", "podcast"],
         )
         assert result.exit_code != 0
+
+    def test_tool_source_class_persisted_on_manifest(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "readme.md", "# Tool\n\nbody")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src), "--source-class", "tool"])
+        assert result.exit_code == 0, result.output
+        manifest = _read_manifest(wiki_root)
+        assert manifest[-1]["source_class"] == "tool"
+
+
+# ---------------------------------------------------------------------------
+# Slugify fallback — empty / all-non-alphanum input
+# ---------------------------------------------------------------------------
+
+
+class TestIngestSlugifyFallback:
+    """When the stem/source slugifies to empty, a default name is used."""
+
+    def test_file_all_symbol_stem_uses_default(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        """A filename whose stem is all non-alphanum (e.g. '---') must not produce an empty slug.
+
+        The ingest call site uses ``slugify(...) or "document"``, so the manifest
+        entry's file path must contain "document" as the fallback slug.
+        """
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "---.txt", "content")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        assert result.exit_code == 0, f"stderr: {result.output}"
+
+        entries = _read_manifest(wiki_root)
+        assert len(entries) >= 1
+        filename = entries[-1]["file"]
+        # The fallback should ensure the filename contains "document", not an empty slug
+        assert "document" in filename, f"Expected 'document' fallback in filename, got: {filename}"
+
+    def test_text_all_symbol_source_uses_default(self, wiki_root: Path, monkeypatch):
+        """Inline text that is all non-alphanum must fall back to 'note' in the filename."""
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(app, ["ingest", "--mode", "text", "--source", "!!!---???"])
+        assert result.exit_code == 0, f"stderr: {result.output}"
+
+        inbox = wiki_root / "raw" / "inbox"
+        md_files = [f for f in inbox.glob("*.md") if not f.name.startswith(".")]
+        assert len(md_files) >= 1, "No markdown file created in inbox"
+        # The fallback should ensure the file contains "note", not an empty slug
+        assert any("note" in f.name for f in md_files), (
+            f"Expected 'note' fallback in filename, got: {[f.name for f in md_files]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# URL mode — trafilatura extractor
+# ---------------------------------------------------------------------------
+
+
+class TestIngestUrlTrafilatura:
+    def test_url_mode_uses_extractor(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        import io
+
+        from llm_wiki.commands import ingest as ingest_mod
+        from llm_wiki.core.html_extract import ExtractedDoc
+
+        monkeypatch.setattr(ingest_mod, "urlopen", lambda *_a, **_k: io.BytesIO(b"<html><body>raw</body></html>"))
+        monkeypatch.setattr(
+            ingest_mod,
+            "extract_main_content",
+            lambda _html, url=None: ExtractedDoc(text="# Extracted\n\nClean body.", title="T", description="D"),  # noqa: ARG005
+        )
+        result = runner.invoke(app, ["ingest", "--mode", "url", "--source", "https://example.test/page"])
+        assert result.exit_code == 0, result.output
+        web = wiki_root / "raw" / "web"
+        md = next(web.glob("*.md")).read_text()
+        assert "Clean body." in md
+
+    def test_url_empty_extraction_errors(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        import io
+
+        from llm_wiki.commands import ingest as ingest_mod
+        from llm_wiki.core.html_extract import ExtractedDoc
+
+        monkeypatch.setattr(ingest_mod, "urlopen", lambda *_a, **_k: io.BytesIO(b"<html></html>"))
+        monkeypatch.setattr(
+            ingest_mod,
+            "extract_main_content",
+            lambda _html, url=None: ExtractedDoc(text="", title=None, description=None),  # noqa: ARG005
+        )
+        result = runner.invoke(app, ["ingest", "--mode", "url", "--source", "https://example.test/empty"])
+        assert result.exit_code != 0
+        assert "no content" in result.output.lower() or "empty" in result.output.lower()

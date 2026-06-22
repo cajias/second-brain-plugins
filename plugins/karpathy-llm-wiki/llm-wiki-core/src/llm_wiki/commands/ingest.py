@@ -9,13 +9,16 @@ Supports 4 modes: session, file, url, text.
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import uuid
 from datetime import UTC, datetime
-from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -24,6 +27,8 @@ import typer
 
 from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.dedup import SOURCE_CLASS_THRESHOLDS
+from llm_wiki.core.html_extract import extract_main_content
+from llm_wiki.core.text import slugify
 
 
 # ---------------------------------------------------------------------------
@@ -47,35 +52,6 @@ def _timestamp() -> str:
 def _short_id() -> str:
     """Return a short unique hex ID."""
     return uuid.uuid4().hex[:8]
-
-
-def _slugify(text: str, max_len: int = 60) -> str:
-    """Turn arbitrary text into a filesystem-safe kebab-case slug."""
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9\s-]", "", text)
-    text = re.sub(r"[\s_]+", "-", text.strip())
-    text = re.sub(r"-+", "-", text).strip("-")
-    return text[:max_len]
-
-
-class _HTMLTextExtractor(HTMLParser):
-    """Minimal HTML-to-text converter."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._pieces: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self._pieces.append(data)
-
-    def get_text(self) -> str:
-        return " ".join(self._pieces)
-
-
-def _html_to_text(html: str) -> str:
-    extractor = _HTMLTextExtractor()
-    extractor.feed(html)
-    return extractor.get_text()
 
 
 _marker_models: dict[str, Any] | None = None
@@ -159,7 +135,7 @@ def _ingest_session(source: str, cfg: WikiConfig, source_class: str = "chat") ->
     cfg.raw_sessions.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    stem = _slugify(source_path.stem, max_len=40) or "session"
+    stem = slugify(source_path.stem, max_len=40) or "session"
     dest_name = f"{ts}-{stem}{source_path.suffix}"
     dest_path = cfg.raw_sessions / dest_name
 
@@ -203,7 +179,7 @@ def _ingest_file(source: str, cfg: WikiConfig, source_class: str = "chat") -> di
     cfg.raw_artifacts.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    stem = _slugify(source_path.stem, max_len=40) or "document"
+    stem = slugify(source_path.stem, max_len=40) or "document"
     dest_name = f"{ts}-{stem}{source_path.suffix}"
     dest_path = cfg.raw_artifacts / dest_name
 
@@ -275,15 +251,19 @@ def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dic
         msg = f"Failed to fetch URL: {e}"
         raise RuntimeError(msg) from e
 
-    text = _html_to_text(raw_html)
+    doc = extract_main_content(raw_html, url=source)
+    if not doc.text.strip():
+        msg = f"No content could be extracted from {source} (empty/boilerplate-only page)."
+        raise RuntimeError(msg)
+    text = doc.text
 
-    slug = _slugify(parsed.netloc + "-" + parsed.path, max_len=50) or "web-page"
+    slug = slugify(parsed.netloc + "-" + parsed.path, max_len=50) or "web-page"
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     dest_name = f"{ts}-{slug}.md"
     dest_path = cfg.raw_web / dest_name
 
     dest_path.write_text(
-        f"# {source}\n\n> Fetched: {_timestamp()}\n\n{text.strip()}\n",
+        f"# {source}\n\n> Fetched: {_timestamp()}\n\nSource: {source}\n\n{text.strip()}\n",
         encoding="utf-8",
     )
 
@@ -315,22 +295,35 @@ def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dic
     }
 
 
-def _ingest_text(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
-    """Ingest a quick text snippet as a timestamped markdown file."""
+def _ingest_text(
+    body: str,
+    cfg: WikiConfig,
+    source_class: str = "chat",
+    source: str = "inline-text",
+) -> dict[str, Any]:
+    """Ingest a quick text snippet as a timestamped markdown file.
+
+    Args:
+        body: The raw text content to ingest.
+        cfg: Wiki configuration.
+        source_class: Source class for dedup tuning (chat, doc, tool, …).
+        source: The source label written to the sidecar and manifest
+            (defaults to ``"inline-text"``; pass a URL for tool ingestion).
+    """
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    slug = _slugify(source[:50], max_len=40) or "note"
+    slug = slugify(body[:50], max_len=40) or "note"
     dest_name = f"{ts}-{slug}.md"
     dest_path = cfg.raw_inbox / dest_name
 
     dest_path.write_text(
-        f"# Note\n\n> Created: {_timestamp()}\n\n{source.strip()}\n",
+        f"# Note\n\n> Created: {_timestamp()}\n\n{body.strip()}\n",
         encoding="utf-8",
     )
 
     meta = {
-        "source": "inline-text",
+        "source": source,
         "date": _timestamp(),
         "type": "text",
         "original_path": None,
@@ -342,7 +335,7 @@ def _ingest_text(source: str, cfg: WikiConfig, source_class: str = "chat") -> di
         "id": f"ingest-{_short_id()}",
         "file": str(dest_path.relative_to(cfg.project_root)),
         "type": "text",
-        "source": "inline-text",
+        "source": source,
         "date": meta["date"],
         "status": "pending",
         "source_class": source_class,
@@ -413,7 +406,7 @@ def _validate_mode_and_source(mode: str | None, source: str | None) -> tuple[str
 
 def _dispatch_ingest(mode: str, source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
     """Dispatch to the right per-mode helper. Caller catches FileNotFoundError/RuntimeError."""
-    dispatch = {
+    dispatch: dict[str, Callable[..., dict[str, Any]]] = {
         "session": _ingest_session,
         "file": _ingest_file,
         "url": _ingest_url,
@@ -455,7 +448,7 @@ def ingest(
     source_class: str = typer.Option(
         "chat",
         "--source-class",
-        help="Source class for dedup tuning: chat, doc, book, or paper.",
+        help="Source class for dedup tuning: chat, doc, book, paper, or tool.",
     ),
     list_pending: bool = typer.Option(
         False,

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import secrets
 import string
 import sys
@@ -28,7 +27,9 @@ import typer
 from llm_wiki.commands.charts import _generate_all_charts
 from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.dedup import check_duplicate, check_duplicates_batch, resolve_threshold
-from llm_wiki.core.taxonomy import load_taxonomy_safe
+from llm_wiki.core.frontmatter import MAX_TAGS, dump
+from llm_wiki.core.taxonomy import load_taxonomy_safe, validate_tags
+from llm_wiki.core.text import slugify
 
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_MAX_SLUG_LEN = 80
-_MAX_TAGS = 6
 _NOTE_ID_RANDOM_LEN = 5
 _VALID_VERDICTS = {"yes", "no", "maybe"}
 
@@ -47,16 +46,6 @@ _VALID_VERDICTS = {"yes", "no", "maybe"}
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _slugify(text: str) -> str:
-    """Convert text to a kebab-case slug suitable for filenames."""
-    text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    text = re.sub(r"-+", "-", text).strip("-")
-    if len(text) > _MAX_SLUG_LEN:
-        text = text[:_MAX_SLUG_LEN].rsplit("-", 1)[0]
-    return text
 
 
 def _generate_id() -> str:
@@ -90,26 +79,22 @@ def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signa
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create a new permanent note with full frontmatter."""
-    # Validate against taxonomy
     taxonomy_path = cfg.wiki_meta / "tag-taxonomy.md"
     taxonomy = load_taxonomy_safe(taxonomy_path)
 
-    warnings = []
+    warnings: list[str] = []
     if taxonomy["knowledge_types"] and knowledge_type not in taxonomy["knowledge_types"]:
         warnings.append(
             f"knowledge_type '{knowledge_type}' not in approved list: {sorted(taxonomy['knowledge_types'])}"
         )
-
-    if taxonomy["tags"]:
-        invalid_tags = [t for t in tags if t not in taxonomy["tags"]]
-        if invalid_tags:
-            warnings.append(f"Tags not in approved taxonomy: {invalid_tags}. Approved: {sorted(taxonomy['tags'])}")
-
-    if len(tags) > _MAX_TAGS:
-        warnings.append(f"Too many tags ({len(tags)}). Maximum is {_MAX_TAGS}.")
+    invalid = validate_tags(tags, taxonomy_path)
+    if invalid:
+        warnings.append(f"Tags not in approved taxonomy: {invalid}. Approved: {sorted(taxonomy['tags'])}")
+    if len(tags) > MAX_TAGS:
+        warnings.append(f"Too many tags ({len(tags)}). Maximum is {MAX_TAGS}.")
 
     note_id = _generate_id()
-    slug = _slugify(title)
+    slug = slugify(title)
     filename = f"{slug}.md"
     filepath = cfg.wiki_permanent / filename
 
@@ -121,32 +106,18 @@ def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signa
 
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
-    # Build note content with deterministic field ordering
-    lines = [
-        "---",
-        f"id: {note_id}",
-        "type: permanent",
-        f"knowledge_type: {knowledge_type}",
-        "status: pending",
-        f"confidence: {confidence}",
-        "scope: universal",
-        "tags:",
-    ]
-    lines.extend(f"  - {tag}" for tag in tags)
-    lines.extend(
-        [
-            f'source: "{source}"',
-            f'created: "{now}"',
-            "---",
-            "",
-            f"# {title}",
-            "",
-            body,
-            "",
-        ]
-    )
-
-    note_content = "\n".join(lines)
+    metadata = {
+        "id": note_id,
+        "type": "permanent",
+        "knowledge_type": knowledge_type,
+        "status": "pending",
+        "confidence": confidence,
+        "scope": "universal",
+        "tags": tags,
+        "source": source,
+        "created": now,
+    }
+    note_content = dump(metadata, f"\n# {title}\n\n{body}\n")
 
     result: dict[str, Any] = {
         "id": note_id,

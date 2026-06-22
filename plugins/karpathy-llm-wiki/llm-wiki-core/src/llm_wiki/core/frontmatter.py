@@ -24,6 +24,7 @@ KNOWLEDGE_TYPES = [
     "idea",
     "design",
     "exploration",
+    "tool",
 ]
 
 # Fields that must be present for a note to lint clean.

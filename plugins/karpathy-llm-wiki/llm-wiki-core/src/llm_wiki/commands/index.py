@@ -24,6 +24,7 @@ from llm_wiki.core.embeddings import (
     set_last_index_time,
 )
 from llm_wiki.core.frontmatter import parse_file
+from llm_wiki.core.tags import normalize_tags
 
 
 if TYPE_CHECKING:
@@ -47,13 +48,6 @@ def _collect_md_files(permanent_dir: Path) -> list[Path]:
     if not permanent_dir.exists():
         return []
     return sorted(permanent_dir.glob("**/*.md"))
-
-
-def _normalize_tags(tags: object) -> str:
-    """Serialize a tags value (list or scalar) into a CSV string for storage."""
-    if isinstance(tags, list):
-        return ",".join(str(t) for t in tags)
-    return str(tags) if tags else ""
 
 
 def _normalize_confidence(raw: object) -> float:
@@ -80,7 +74,9 @@ def _build_record(
         "id": metadata.get("id", filepath.stem),
         "title": metadata.get("title", filepath.stem),
         "knowledge_type": metadata.get("knowledge_type", "unknown"),
-        "tags": _normalize_tags(metadata.get("tags", [])),
+        "tags": normalize_tags(metadata.get("tags", [])),
+        "type": metadata.get("type", "permanent"),
+        "scope": metadata.get("scope", ""),
         "confidence": _normalize_confidence(metadata.get("confidence", 0.0)),
         "source": metadata.get("source", ""),
         "created": str(metadata.get("created", "")),
@@ -113,7 +109,9 @@ def _empty_index_schema() -> pa.Schema:
             pa.field("id", pa.utf8()),
             pa.field("title", pa.utf8()),
             pa.field("knowledge_type", pa.utf8()),
-            pa.field("tags", pa.utf8()),
+            pa.field("tags", pa.list_(pa.utf8())),
+            pa.field("type", pa.utf8()),
+            pa.field("scope", pa.utf8()),
             pa.field("confidence", pa.float64()),
             pa.field("source", pa.utf8()),
             pa.field("created", pa.utf8()),
@@ -214,10 +212,7 @@ def _do_stats(cfg: WikiConfig) -> dict[str, Any]:
     stats["by_knowledge_type"] = kt_counts
 
     # By tag
-    all_tags: list[str] = []
-    for tags_str in df["tags"]:
-        if tags_str:
-            all_tags.extend(t.strip() for t in tags_str.split(",") if t.strip())
+    all_tags: list[str] = [tag for tags_val in df["tags"] for tag in normalize_tags(tags_val)]
     stats["by_tag"] = dict(Counter(all_tags).most_common())
 
     # Embedding dimensions
@@ -261,10 +256,7 @@ def _write_stats(cfg: WikiConfig) -> None:
 
         lines.append("## By Tag")
         lines.append("")
-        all_tags: list[str] = []
-        for tags_str in df["tags"]:
-            if tags_str:
-                all_tags.extend(t.strip() for t in tags_str.split(",") if t.strip())
+        all_tags: list[str] = [tag for tags_val in df["tags"] for tag in normalize_tags(tags_val)]
         if all_tags:
             for tag, count in Counter(all_tags).most_common():
                 lines.append(f"- **{tag}:** {count}")

@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 import lancedb
 from sentence_transformers import SentenceTransformer
 
+from llm_wiki.core.tags import normalize_tags
+
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,23 +57,83 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [emb.tolist() for emb in embeddings]
 
 
-def search_index(
-    db_path: Path,
-    table_name: str,
-    query: str,
-    limit: int = 10,
-) -> list[dict[str, Any]]:
-    """Search the LanceDB vector index for notes similar to the query.
+def _sql_literal(value: str) -> str:
+    """Single-quote a string for a DataFusion predicate, escaping embedded quotes."""
+    escaped = value.replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _build_filter_predicate(
+    knowledge_type: str | None,
+    tags: list[str] | None,
+    type_: str | None,
+    scope: str | None,
+    where: str | None,
+) -> str | None:
+    """Build a DataFusion predicate AND-joining the requested filters.
+
+    Repeated tags are AND-chained via ``array_has_any`` (token-exact list
+    membership). ``where`` is appended verbatim, parenthesized. Returns None
+    when no filter is requested.
+    """
+    clauses: list[str] = []
+    if knowledge_type:
+        clauses.append(f"knowledge_type = {_sql_literal(knowledge_type)}")
+    clauses.extend(f"array_has_any(tags, [{_sql_literal(tag)}])" for tag in tags or [])
+    if type_:
+        clauses.append(f"type = {_sql_literal(type_)}")
+    if scope:
+        clauses.append(f"scope = {_sql_literal(scope)}")
+    if where:
+        clauses.append(f"({where})")
+    return " AND ".join(clauses) if clauses else None
+
+
+def _row_to_result(row: Any, *, scored: bool) -> dict[str, Any]:  # noqa: ANN401  # pandas row is heterogeneous
+    """Map a LanceDB result row into the public result dict.
 
     Args:
-        db_path: Path to the LanceDB database directory.
-        table_name: Name of the table to search.
-        query: Natural language search query.
-        limit: Maximum number of results.
+        row: A pandas Series row from a LanceDB query result.
+        scored: When True, derive a cosine similarity score from ``_distance``.
+                When False, set ``score`` to None (filter-only path).
 
     Returns:
-        List of matching records with similarity scores. Each dict has:
-        id, title, file_path, score, snippet, knowledge_type, tags.
+        Dict with keys: id, title, file_path, score, snippet, knowledge_type, tags.
+    """
+    score = round(max(0.0, 1.0 - row.get("_distance", 0.0)), 4) if scored else None
+    snippet = row.get("content", "")[:200].replace("\n", " ").strip()
+    tags = normalize_tags(row.get("tags"))
+    return {
+        "id": row.get("id", ""),
+        "title": row.get("title", ""),
+        "file_path": row.get("file_path", ""),
+        "score": score,
+        "snippet": snippet,
+        "knowledge_type": row.get("knowledge_type", ""),
+        "tags": tags,
+    }
+
+
+def search_index(  # noqa: PLR0913  # each filter is a discrete query dimension
+    db_path: Path,
+    table_name: str,
+    query: str | None = None,
+    limit: int = 10,
+    *,
+    knowledge_type: str | None = None,
+    tags: list[str] | None = None,
+    type_: str | None = None,
+    scope: str | None = None,
+    where: str | None = None,
+) -> list[dict[str, Any]]:
+    """Search the LanceDB index by vector and/or frontmatter filters.
+
+    When ``query`` is None the search is filter-only (returns every matching
+    row, unscored). When ``query`` is set it is a vector search optionally
+    narrowed by the same filters via a prefiltered ``.where`` predicate.
+
+    Returns a list of result dicts: id, title, file_path, score (None when
+    filter-only), snippet, knowledge_type, tags (list).
     """
     db = lancedb.connect(str(db_path))
     if table_name not in db.table_names():
@@ -81,31 +143,23 @@ def search_index(
     if table.count_rows() == 0:
         return []
 
-    model = get_model()
-    query_embedding = model.encode([query])[0].tolist()
+    predicate = _build_filter_predicate(knowledge_type, tags, type_, scope, where)
 
-    results_df = table.search(query_embedding).metric("cosine").limit(limit).to_pandas()
+    if query is None:
+        builder = table.search().limit(limit)
+        if predicate:
+            builder = builder.where(predicate, prefilter=True)
+        df = builder.to_pandas()
+        return [_row_to_result(row, scored=False) for _, row in df.iterrows()]
 
-    if results_df.empty:
+    query_embedding = get_model().encode([query])[0].tolist()
+    builder = table.search(query_embedding).metric("cosine").limit(limit)
+    if predicate:
+        builder = builder.where(predicate, prefilter=True)
+    df = builder.to_pandas()
+    if df.empty:
         return []
-
-    results = []
-    for _, row in results_df.iterrows():
-        score = 1.0 - row.get("_distance", 0.0)
-        snippet = row.get("content", "")[:200].replace("\n", " ").strip()
-        results.append(
-            {
-                "id": row.get("id", ""),
-                "title": row.get("title", ""),
-                "file_path": row.get("file_path", ""),
-                "score": round(score, 4),
-                "snippet": snippet,
-                "knowledge_type": row.get("knowledge_type", ""),
-                "tags": row.get("tags", ""),
-            }
-        )
-
-    return results
+    return [_row_to_result(row, scored=True) for _, row in df.iterrows()]
 
 
 def get_last_index_time(lancedb_path: Path) -> float:
