@@ -11,29 +11,63 @@ You are the knowledge base query engine. Your job is to search the wiki, read th
 The user's input is: `$ARGUMENTS`
 
 Extract:
-- **question**: Everything that is not a flag. This is the search query.
-- **--limit N**: Maximum number of search results to retrieve (default: 5).
+- **question**: Everything that is not a flag. This is the search query (optional when a filter is given).
+- **--knowledge-type VALUE**: Filter by `knowledge_type` frontmatter field (e.g. `tool`, `concept`, `decision`).
+- **--tag VALUE**: Filter by tag (repeatable; multiple `--tag` flags combine as AND -- the note must have all of them).
+- **--type VALUE**: Filter by frontmatter `type` field.
+- **--scope VALUE**: Filter by frontmatter `scope` field.
+- **--where EXPR**: Raw SQL predicate appended with AND to any other filters (advanced).
+- **--limit N**: Maximum number of results to retrieve (default: config `query.default_limit` for semantic search; all matches for filter-only mode).
 - **--save**: If present, file the synthesized answer as a new permanent note.
 
-If the question is empty or missing, ask the user what they want to know and stop.
+**Two modes:**
+
+1. **Semantic mode** (question provided, no filters OR question + filters): ranked by embedding similarity,
+   highest-score results first. Use this for open-ended discovery ("how does X work?").
+2. **Filter-only mode** (no question, at least one filter): returns ALL matching notes (no score cap).
+   Use this for exhaustive handouts ("every tool tagged `phase-testing`"). No `--limit` cap is applied
+   unless you pass one explicitly.
+
+Error cases:
+- Question missing AND no filter provided → error. Ask the user what they want to know and stop.
 
 ## Step 2: Search the knowledge base
 
-Run the semantic search:
+Choose the right invocation based on the mode.
+
+**Semantic search** (question only):
 
 ```bash
 kb search "QUESTION" --limit N --json
+```
+
+**Semantic + filter** (ranked discovery within a subset):
+
+```bash
+kb search "QUESTION" --tag tool-cli --limit N --json
+```
+
+**Filter-only handout** (enumerate every match, no query):
+
+```bash
+kb search --knowledge-type tool --tag phase-testing --json
+```
+
+**Multiple tags** (AND logic -- note must carry all tags):
+
+```bash
+kb search --tag phase-testing --tag tool-cli --json
 ```
 
 Replace `QUESTION` with the extracted question (properly shell-escaped) and `N` with the limit.
 
 Parse the JSON output. Each result contains: `id`, `title`, `file_path`, `score`, `snippet`, `knowledge_type`, `tags`.
 
-If zero results are returned, tell the user the knowledge base has no relevant notes for their question and suggest they add content or rephrase. Stop here.
+If zero results are returned, tell the user the knowledge base has no matching notes and suggest they add content, rephrase, or broaden the filters. Stop here.
 
 ## Step 3: Read the full source notes
 
-For each search result with `score >= 0.3` (up to the limit), read the **full markdown file** at `file_path`. Do not rely on the snippet alone -- the snippet is only the first 200 characters.
+For each search result with `score >= 0.3` (or all results in filter-only mode), read the **full markdown file** at `file_path`. Do not rely on the snippet alone -- the snippet is only the first 200 characters.
 
 As you read each note, track:
 - The note's title (for citation)
@@ -52,6 +86,8 @@ Write a comprehensive answer to the user's question that:
 3. **Synthesizes across notes** -- connect ideas from multiple notes when relevant. Don't just summarize each note sequentially.
 4. **Identifies gaps** -- if the question is only partially answered by the wiki, say what's missing and suggest follow-up topics.
 5. **Preserves nuance** -- if notes contain caveats, confidence levels, or contradictions, surface them.
+
+For filter-only handouts, present the matched notes as a structured list rather than a synthesized narrative.
 
 Format the answer with clear structure (headers, bullets) when the answer is complex. Keep it concise when the answer is simple.
 
@@ -91,3 +127,7 @@ Present the synthesized answer to the user. If `--save` was used, confirm the no
 - Wikilinks use the filename without `.md` and without any path prefix: `[[note-title-here]]`.
 - The search uses vector embeddings. Queries work best as natural language questions or topic phrases.
 - Do not hallucinate content that is not in the wiki notes. If the wiki doesn't cover something, say so.
+- **Filter-only mode** is the right tool when you need an exhaustive handout -- e.g. "all tools for phase-testing"
+  yields a complete list, not a ranked top-N. Add `--limit` only if you want to cap it.
+- **Multiple `--tag` flags combine as AND** -- the note must carry every specified tag.
+- **`--where EXPR`** accepts a raw DataFusion SQL predicate for advanced filtering not covered by the named flags.
