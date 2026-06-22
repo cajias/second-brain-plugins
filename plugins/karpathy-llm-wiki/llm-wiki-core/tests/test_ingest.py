@@ -343,3 +343,43 @@ class TestIngestSourceClass:
             ["ingest", "--mode", "file", "--source", str(src), "--source-class", "podcast"],
         )
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Slugify fallback — empty / all-non-alphanum input
+# ---------------------------------------------------------------------------
+
+
+class TestIngestSlugifyFallback:
+    """When the stem/source slugifies to empty, a default name is used."""
+
+    def test_file_all_symbol_stem_uses_default(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        """A filename whose stem is all non-alphanum (e.g. '---') must not produce an empty slug.
+
+        The ingest call site uses ``slugify(...) or "document"``, so the manifest
+        entry's file path must contain "document" as the fallback slug.
+        """
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "---.txt", "content")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        assert result.exit_code == 0, f"stderr: {result.output}"
+
+        entries = _read_manifest(wiki_root)
+        assert len(entries) >= 1
+        filename = entries[-1]["file"]
+        # The fallback should ensure the filename contains "document", not an empty slug
+        assert "document" in filename, f"Expected 'document' fallback in filename, got: {filename}"
+
+    def test_text_all_symbol_source_uses_default(self, wiki_root: Path, monkeypatch):
+        """Inline text that is all non-alphanum must fall back to 'note' in the filename."""
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(app, ["ingest", "--mode", "text", "--source", "!!!---???"])
+        assert result.exit_code == 0, f"stderr: {result.output}"
+
+        inbox = wiki_root / "raw" / "inbox"
+        md_files = [f for f in inbox.glob("*.md") if not f.name.startswith(".")]
+        assert len(md_files) >= 1, "No markdown file created in inbox"
+        # The fallback should ensure the file contains "note", not an empty slug
+        assert any("note" in f.name for f in md_files), (
+            f"Expected 'note' fallback in filename, got: {[f.name for f in md_files]}"
+        )

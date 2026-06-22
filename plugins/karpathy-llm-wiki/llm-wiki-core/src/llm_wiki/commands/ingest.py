@@ -9,7 +9,6 @@ Supports 4 modes: session, file, url, text.
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -24,6 +23,7 @@ import typer
 
 from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.dedup import SOURCE_CLASS_THRESHOLDS
+from llm_wiki.core.text import slugify
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +48,6 @@ def _short_id() -> str:
     """Return a short unique hex ID."""
     return uuid.uuid4().hex[:8]
 
-
-def _slugify(text: str, max_len: int = 60) -> str:
-    """Turn arbitrary text into a filesystem-safe kebab-case slug."""
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9\s-]", "", text)
-    text = re.sub(r"[\s_]+", "-", text.strip())
-    text = re.sub(r"-+", "-", text).strip("-")
-    return text[:max_len]
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -159,7 +151,7 @@ def _ingest_session(source: str, cfg: WikiConfig, source_class: str = "chat") ->
     cfg.raw_sessions.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    stem = _slugify(source_path.stem, max_len=40) or "session"
+    stem = slugify(source_path.stem, max_len=40) or "session"
     dest_name = f"{ts}-{stem}{source_path.suffix}"
     dest_path = cfg.raw_sessions / dest_name
 
@@ -203,7 +195,7 @@ def _ingest_file(source: str, cfg: WikiConfig, source_class: str = "chat") -> di
     cfg.raw_artifacts.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    stem = _slugify(source_path.stem, max_len=40) or "document"
+    stem = slugify(source_path.stem, max_len=40) or "document"
     dest_name = f"{ts}-{stem}{source_path.suffix}"
     dest_path = cfg.raw_artifacts / dest_name
 
@@ -277,7 +269,7 @@ def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dic
 
     text = _html_to_text(raw_html)
 
-    slug = _slugify(parsed.netloc + "-" + parsed.path, max_len=50) or "web-page"
+    slug = slugify(parsed.netloc + "-" + parsed.path, max_len=50) or "web-page"
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     dest_name = f"{ts}-{slug}.md"
     dest_path = cfg.raw_web / dest_name
@@ -320,7 +312,7 @@ def _ingest_text(source: str, cfg: WikiConfig, source_class: str = "chat") -> di
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    slug = _slugify(source[:50], max_len=40) or "note"
+    slug = slugify(source[:50], max_len=40) or "note"
     dest_name = f"{ts}-{slug}.md"
     dest_path = cfg.raw_inbox / dest_name
 
