@@ -19,6 +19,16 @@ import pytest
 import yaml
 
 
+def pytest_configure(config):
+    """Force pytest's basetemp under /tmp so test wikis never land in a real vault.
+
+    tmp_path/basetemp can otherwise resolve into the user's Obsidian vault
+    (TMPDIR/cwd dependent), polluting it with fixture notes.
+    """
+    if not config.option.basetemp:
+        config.option.basetemp = Path(tempfile.mkdtemp(prefix="pytest-llm-wiki-", dir="/tmp"))
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from llm_wiki.core.config import WikiConfig, get_project_root, load_config, load_raw_config
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +147,25 @@ class TestGetPath:
         cfg = load_config(root=wiki_root)
         with pytest.raises(KeyError):
             cfg.get_path("nonexistent.key.path")
+
+
+# ---------------------------------------------------------------------------
+# Pytest infrastructure
+# ---------------------------------------------------------------------------
+
+
+def test_basetemp_under_tmp(tmp_path: Path) -> None:
+    """Regression guard: pytest_configure must pin basetemp under /tmp.
+
+    Without the hook, tmp_path can resolve inside the user's Obsidian vault
+    (TMPDIR/cwd dependent), polluting it with ~1,200 fixture wikis.
+
+    We resolve both sides so macOS's /tmp -> /private/tmp symlink doesn't
+    cause a spurious failure.
+    """
+    resolved = tmp_path.resolve()
+    tmp_resolved = Path("/tmp").resolve()
+    assert str(resolved).startswith(str(tmp_resolved)), (
+        f"tmp_path resolved to {resolved!r} — pytest basetemp is not under /tmp. "
+        "Check the pytest_configure hook in conftest.py."
+    )
