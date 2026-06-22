@@ -41,8 +41,9 @@ def _sample_tool() -> GitHubTool:
 
 
 def _never_github(_owner: str, _repo: str, _token: object) -> GitHubTool:
-    """Stub that must never be called in generic-URL routing tests."""
-    msg = "github_fetch must not be called for non-github URL"
+    """Sentinel that must never be called in generic-URL routing tests."""
+    pytest.fail("github_fetch must not be called for a non-github URL")
+    msg = "unreachable"
     raise AssertionError(msg)
 
 
@@ -199,12 +200,13 @@ class TestIngestToolRouting:
         sidecar = dest.parent / (dest.name + ".meta.json")
         meta = json.loads(sidecar.read_text())
         assert meta["source"] == url
-        assert meta["type"] == "tool"
+        assert meta["type"] == "text"  # ingest mode, not source class
 
         manifest = _read_manifest(wiki_root)
         last = manifest[-1]
         assert last["source"] == url
         assert last["source_class"] == "tool"
+        assert last["type"] == "text"  # ingest mode, not source class
 
     def test_github_not_found_raises_error(self, wiki_root: Path) -> None:
         """GitHubNotFoundError must propagate from _ingest_tool."""

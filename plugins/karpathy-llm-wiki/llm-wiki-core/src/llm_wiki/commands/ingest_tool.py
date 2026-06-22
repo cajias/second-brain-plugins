@@ -66,22 +66,6 @@ def _default_github_fetch(owner: str, repo: str, token: str | None) -> GitHubToo
     return fetch_github(owner, repo, token)
 
 
-def _set_source(cfg: WikiConfig, result: dict[str, Any], url: str) -> None:
-    """Rewrite the just-written sidecar + manifest entry so ``source`` is the URL."""
-    dest = cfg.project_root / result["dest"]
-    meta_path = dest.parent / (dest.name + ".meta.json")
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["source"] = url
-    meta["type"] = "tool"
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-
-    mp = cfg.raw_inbox / ".manifest.json"
-    entries = json.loads(mp.read_text(encoding="utf-8"))
-    entries[-1]["source"] = url
-    entries[-1]["type"] = "tool"
-    mp.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
-
-
 def _ingest_tool(
     url: str,
     cfg: WikiConfig,
@@ -122,9 +106,7 @@ def _ingest_tool(
         )
         body = block + doc.text
 
-    result = _ingest_text(body, cfg, source_class="tool")
-    _set_source(cfg, result, url)
-    return result
+    return _ingest_text(body, cfg, source_class="tool", source=url)
 
 
 def ingest_tool(

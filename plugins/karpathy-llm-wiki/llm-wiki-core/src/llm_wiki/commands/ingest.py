@@ -13,7 +13,12 @@ import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -290,22 +295,35 @@ def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dic
     }
 
 
-def _ingest_text(source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
-    """Ingest a quick text snippet as a timestamped markdown file."""
+def _ingest_text(
+    body: str,
+    cfg: WikiConfig,
+    source_class: str = "chat",
+    source: str = "inline-text",
+) -> dict[str, Any]:
+    """Ingest a quick text snippet as a timestamped markdown file.
+
+    Args:
+        body: The raw text content to ingest.
+        cfg: Wiki configuration.
+        source_class: Source class for dedup tuning (chat, doc, tool, …).
+        source: The source label written to the sidecar and manifest
+            (defaults to ``"inline-text"``; pass a URL for tool ingestion).
+    """
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    slug = slugify(source[:50], max_len=40) or "note"
+    slug = slugify(body[:50], max_len=40) or "note"
     dest_name = f"{ts}-{slug}.md"
     dest_path = cfg.raw_inbox / dest_name
 
     dest_path.write_text(
-        f"# Note\n\n> Created: {_timestamp()}\n\n{source.strip()}\n",
+        f"# Note\n\n> Created: {_timestamp()}\n\n{body.strip()}\n",
         encoding="utf-8",
     )
 
     meta = {
-        "source": "inline-text",
+        "source": source,
         "date": _timestamp(),
         "type": "text",
         "original_path": None,
@@ -317,7 +335,7 @@ def _ingest_text(source: str, cfg: WikiConfig, source_class: str = "chat") -> di
         "id": f"ingest-{_short_id()}",
         "file": str(dest_path.relative_to(cfg.project_root)),
         "type": "text",
-        "source": "inline-text",
+        "source": source,
         "date": meta["date"],
         "status": "pending",
         "source_class": source_class,
@@ -388,7 +406,7 @@ def _validate_mode_and_source(mode: str | None, source: str | None) -> tuple[str
 
 def _dispatch_ingest(mode: str, source: str, cfg: WikiConfig, source_class: str = "chat") -> dict[str, Any]:
     """Dispatch to the right per-mode helper. Caller catches FileNotFoundError/RuntimeError."""
-    dispatch = {
+    dispatch: dict[str, Callable[..., dict[str, Any]]] = {
         "session": _ingest_session,
         "file": _ingest_file,
         "url": _ingest_url,
