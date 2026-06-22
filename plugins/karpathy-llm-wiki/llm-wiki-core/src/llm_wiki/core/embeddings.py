@@ -118,7 +118,7 @@ def search_index(  # noqa: PLR0913  # each filter is a discrete query dimension
     db_path: Path,
     table_name: str,
     query: str | None = None,
-    limit: int = 10,
+    limit: int | None = 10,
     *,
     knowledge_type: str | None = None,
     tags: list[str] | None = None,
@@ -146,7 +146,14 @@ def search_index(  # noqa: PLR0913  # each filter is a discrete query dimension
     predicate = _build_filter_predicate(knowledge_type, tags, type_, scope, where)
 
     if query is None:
-        builder = table.search().limit(limit)
+        if limit is None:
+            row_count = table.count_rows()
+            if row_count == 0:
+                return []
+            effective_limit = row_count
+        else:
+            effective_limit = limit
+        builder = table.search().limit(effective_limit)
         if predicate:
             builder = builder.where(predicate, prefilter=True)
         df = builder.to_pandas()

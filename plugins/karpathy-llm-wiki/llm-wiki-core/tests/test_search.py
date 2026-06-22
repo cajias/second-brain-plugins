@@ -367,6 +367,46 @@ class TestFilterPredicate:
 
 
 # ---------------------------------------------------------------------------
+# Filter-only truly unbounded (Fix 2)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterOnlyTrulyUnbounded:
+    """Filter-only with no --limit must return ALL rows, using row count as limit."""
+
+    def test_filter_only_no_limit_uses_row_count(self, large_wiki: Path, monkeypatch, mock_embedding_model):
+        """search_index filter-only with limit=None returns all 12 rows; no 10_000 magic."""
+        from typer.testing import CliRunner
+
+        from llm_wiki.cli import app
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(large_wiki)
+        runner = CliRunner()
+        runner.invoke(app, ["index", "--full"])
+        db = large_wiki / ".lancedb"
+        # Pass limit=None explicitly — must return all 12
+        res = search_index(db, "notes", query=None, limit=None, knowledge_type="concept")
+        assert len(res) == 12, f"expected all 12, got {len(res)}"
+        for r in res:
+            assert r["score"] is None
+
+    def test_explicit_limit_still_caps(self, large_wiki: Path, monkeypatch, mock_embedding_model):
+        """Explicit --limit N on filter-only must still cap to N results."""
+        from typer.testing import CliRunner
+
+        from llm_wiki.cli import app
+        from llm_wiki.core.embeddings import search_index
+
+        monkeypatch.chdir(large_wiki)
+        runner = CliRunner()
+        runner.invoke(app, ["index", "--full"])
+        db = large_wiki / ".lancedb"
+        res = search_index(db, "notes", query=None, limit=5, knowledge_type="concept")
+        assert len(res) <= 5
+
+
+# ---------------------------------------------------------------------------
 # search_index filter params + filter-only path
 # ---------------------------------------------------------------------------
 

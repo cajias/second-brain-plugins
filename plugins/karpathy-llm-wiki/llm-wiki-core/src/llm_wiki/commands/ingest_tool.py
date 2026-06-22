@@ -80,6 +80,16 @@ def _ingest_tool(
     - bare owner/repo → GitHub API path (documented contract)
     - any other URL   → generic HTML / trafilatura path
     """
+    # SSRF prevention: reject non-http/https schemes before any fetch
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https", ""):
+        msg = f"Unsupported URL scheme {parsed.scheme!r}. Only http:// and https:// URLs are accepted."
+        raise ValueError(msg)
+    # Reject schemeless URLs that have a netloc but no valid scheme (e.g. "//foo.com")
+    if parsed.scheme == "" and parsed.netloc:
+        msg = f"Invalid URL {url!r}: scheme is required for network URLs."
+        raise ValueError(msg)
+
     repo = parse_github_repo(url)
     if repo is not None:
         owner, name = repo
@@ -130,7 +140,7 @@ def ingest_tool(
 
     try:
         result = _ingest_tool(url, cfg)
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1) from e
 
