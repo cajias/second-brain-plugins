@@ -193,6 +193,7 @@ class TestSearchFilterCLI:
         runner.invoke(app, ["index", "--full"])
         result = runner.invoke(app, ["search", "--knowledge-type", "idea"])
         assert result.exit_code == 0, f"crashed on score=None: {result.output}"
+        assert result.stdout.strip(), "Expected non-empty output from score-none test"
         # No score line should contain "None" as a float; should show no score or "—"
         assert ":.4f" not in result.stdout
         assert "None" not in result.stdout
