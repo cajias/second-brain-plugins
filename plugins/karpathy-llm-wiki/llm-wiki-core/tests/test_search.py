@@ -142,7 +142,7 @@ class TestSearchErrors:
     """Edge cases and error conditions."""
 
     def test_no_query_fails(self):
-        """Missing query argument should produce an error."""
+        """No query AND no filter should produce an error (non-zero exit)."""
         result = runner.invoke(app, ["search"])
         assert result.exit_code != 0
 
@@ -151,6 +151,111 @@ class TestSearchErrors:
         monkeypatch.chdir(wiki_root_bare)
         result = runner.invoke(app, ["search", "anything"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Filter CLI
+# ---------------------------------------------------------------------------
+
+
+class TestSearchFilterCLI:
+    """``kb search --knowledge-type / --tag / --type / --scope / --where`` flags."""
+
+    def test_filter_only_enumerates_all(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Filter-only with --knowledge-type should return all matching notes."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "--knowledge-type", "pattern", "--json"])
+        assert result.exit_code == 0, f"unexpected exit: {result.output}"
+        data = json.loads(result.stdout)
+        assert len(data) == 2
+        assert all(r["knowledge_type"] == "pattern" for r in data)
+
+    def test_repeated_tag_flag_anded(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Repeated --tag flags are AND-ed: only notes with all tags match."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "--tag", "security", "--tag", "authentication", "--json"])
+        assert result.exit_code == 0, f"unexpected exit: {result.output}"
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+
+    def test_no_query_no_filter_errors(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Bare ``kb search`` with no query and no filter must exit non-zero."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search"])
+        assert result.exit_code != 0
+
+    def test_score_none_renders_safely(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Human-readable output for filter-only results (score=None) must not crash."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "--knowledge-type", "idea"])
+        assert result.exit_code == 0, f"crashed on score=None: {result.output}"
+        # No score line should contain "None" as a float; should show no score or "—"
+        assert ":.4f" not in result.stdout
+        assert "None" not in result.stdout
+
+    def test_score_none_in_json_output(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Filter-only --json output: score field must be null (not crash on None)."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "--knowledge-type", "idea", "--json"])
+        assert result.exit_code == 0, f"crashed on score=None JSON: {result.output}"
+        data = json.loads(result.stdout)
+        assert data
+        assert all(r["score"] is None for r in data)
+
+    def test_query_with_filter_backward_compat(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Positional query + filter combo works and returns scored results."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "authentication", "--knowledge-type", "pattern", "--json"])
+        assert result.exit_code == 0, f"unexpected exit: {result.output}"
+        data = json.loads(result.stdout)
+        for r in data:
+            assert r["knowledge_type"] == "pattern"
+            assert r["score"] is not None
+
+    def test_filter_only_large_result_set_not_capped(self, large_wiki: Path, monkeypatch, mock_embedding_model):
+        """Filter-only must return ALL matching notes, not be silently capped at 10."""
+        monkeypatch.chdir(large_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "--knowledge-type", "concept", "--json"])
+        assert result.exit_code == 0, f"unexpected exit: {result.output}"
+        data = json.loads(result.stdout)
+        # large_wiki has 12 concept notes — we must get all 12, not just 10
+        assert len(data) == 12, f"expected 12 results (uncapped), got {len(data)}"
+        assert all(r["knowledge_type"] == "concept" for r in data)
+
+    def test_type_option(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """--type flag filters by the frontmatter type field; all 3 notes are permanent."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "--type", "permanent", "--json"])
+        assert result.exit_code == 0, f"unexpected exit: {result.output}"
+        data = json.loads(result.stdout)
+        assert len(data) == 3
+
+    def test_scope_option(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """--scope flag filters by the frontmatter scope field; only orphan-note is project."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        result = runner.invoke(app, ["search", "--scope", "project", "--json"])
+        assert result.exit_code == 0, f"unexpected exit: {result.output}"
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+
+    def test_where_option(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """--where raw SQL predicate is forwarded to the index."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+        # scope='project' matches only orphan-note
+        result = runner.invoke(app, ["search", "--where", "scope = 'project'", "--json"])
+        assert result.exit_code == 0, f"unexpected exit: {result.output}"
+        data = json.loads(result.stdout)
+        assert len(data) == 1
 
 
 # ---------------------------------------------------------------------------

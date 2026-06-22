@@ -347,3 +347,31 @@ def mock_embedding_model(monkeypatch):
     monkeypatch.setattr(emb_mod, "get_model", lambda: model)
 
     return model
+
+
+@pytest.fixture
+def large_wiki(wiki_root: Path) -> Path:
+    """Wiki with 12 ``knowledge_type: concept`` notes (>10) to verify filter-only is not capped."""
+    permanent = wiki_root / "wiki" / "permanent"
+    for i in range(1, 13):
+        (permanent / f"concept-note-{i:02d}.md").write_text(
+            f"""\
+---
+id: perm-concept-{i:02d}
+type: permanent
+knowledge_type: concept
+status: approved
+confidence: high
+scope: universal
+tags:
+  - llm
+source: "manual"
+created: "2026-01-{i:02d}T10:00:00"
+---
+
+# Concept Note {i}
+
+This is concept note number {i}. It contains enough content to be indexed uniquely.
+"""
+        )
+    return wiki_root
