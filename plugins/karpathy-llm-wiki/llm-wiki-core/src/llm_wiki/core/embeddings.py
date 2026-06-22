@@ -100,7 +100,7 @@ def _row_to_result(row: Any, *, scored: bool) -> dict[str, Any]:  # noqa: ANN401
     Returns:
         Dict with keys: id, title, file_path, score, snippet, knowledge_type, tags.
     """
-    score = round(1.0 - row.get("_distance", 0.0), 4) if scored else None
+    score = round(max(0.0, 1.0 - row.get("_distance", 0.0)), 4) if scored else None
     snippet = row.get("content", "")[:200].replace("\n", " ").strip()
     tags = normalize_tags(row.get("tags"))
     return {
