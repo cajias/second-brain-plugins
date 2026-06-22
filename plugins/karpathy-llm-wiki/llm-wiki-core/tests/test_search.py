@@ -107,6 +107,20 @@ class TestSearchJsonOutput:
             assert isinstance(item["score"], (int, float))
             assert 0.0 <= item["score"] <= 1.0
 
+    def test_tags_is_list_in_json_output(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Tags field in --json output must be a plain list (not ndarray/str) so JSON round-trips cleanly."""
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+
+        result = runner.invoke(app, ["search", "pattern", "--json"])
+        assert result.exit_code == 0, f"search failed: {result.output}"
+        data = json.loads(result.stdout)
+
+        for item in data:
+            assert isinstance(item["tags"], list), f"tags must be a list, got {type(item['tags'])!r}: {item['tags']!r}"
+            for tag in item["tags"]:
+                assert isinstance(tag, str), f"each tag must be a str, got {type(tag)!r}"
+
     def test_json_empty_array_on_no_results(self, wiki_root: Path, monkeypatch, mock_embedding_model):
         """No results should produce an empty JSON array."""
         monkeypatch.chdir(wiki_root)

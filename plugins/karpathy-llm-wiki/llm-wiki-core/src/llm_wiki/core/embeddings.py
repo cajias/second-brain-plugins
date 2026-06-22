@@ -10,7 +10,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import lancedb
+import numpy as np
 from sentence_transformers import SentenceTransformer
+
+from llm_wiki.core.tags import normalize_tags
 
 
 if TYPE_CHECKING:
@@ -101,7 +104,9 @@ def search_index(
                 "score": round(score, 4),
                 "snippet": snippet,
                 "knowledge_type": row.get("knowledge_type", ""),
-                "tags": row.get("tags", ""),
+                "tags": normalize_tags(
+                    row.get("tags").tolist() if isinstance(row.get("tags"), np.ndarray) else row.get("tags")
+                ),
             }
         )
 
