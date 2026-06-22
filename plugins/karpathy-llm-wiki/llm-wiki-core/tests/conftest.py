@@ -6,7 +6,13 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 import numpy as np
 import pytest
@@ -146,7 +152,7 @@ def wiki_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def wiki_root_bare() -> Path:
+def wiki_root_bare() -> Iterator[Path]:
     """Return a completely empty temp directory (no .kb-config.yml).
 
     Intentionally rooted at a system temp dir (e.g. /tmp) rather than
