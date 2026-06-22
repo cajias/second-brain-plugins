@@ -16,8 +16,7 @@ def slugify(text: str, max_len: int = 80) -> str:
         A filesystem-safe kebab-case slug.
     """
     text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    text = re.sub(r"-+", "-", text).strip("-")
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
     if len(text) > max_len:
         text = text[:max_len].rsplit("-", 1)[0]
     return text

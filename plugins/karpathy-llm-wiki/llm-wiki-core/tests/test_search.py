@@ -260,6 +260,47 @@ class TestSearchFilterCLI:
 
 
 # ---------------------------------------------------------------------------
+# Score clamp invariant
+# ---------------------------------------------------------------------------
+
+
+class TestRowToResultScoreClamp:
+    """Unit tests for ``_row_to_result`` score clamp: score must stay in [0, 1]."""
+
+    def test_high_distance_clamped_to_zero(self):
+        """LanceDB cosine _distance can reach 2.0; score must never go negative."""
+        from llm_wiki.core.embeddings import _row_to_result
+
+        row = {
+            "_distance": 1.8,
+            "id": "x",
+            "title": "",
+            "file_path": "",
+            "content": "",
+            "knowledge_type": "",
+            "tags": [],
+        }
+        result = _row_to_result(row, scored=True)
+        assert result["score"] == 0.0
+
+    def test_normal_distance_score_correct(self):
+        """Distance 0.2 should map to score 0.8."""
+        from llm_wiki.core.embeddings import _row_to_result
+
+        row = {
+            "_distance": 0.2,
+            "id": "x",
+            "title": "",
+            "file_path": "",
+            "content": "",
+            "knowledge_type": "",
+            "tags": [],
+        }
+        result = _row_to_result(row, scored=True)
+        assert result["score"] == 0.8
+
+
+# ---------------------------------------------------------------------------
 # Filter predicate builder
 # ---------------------------------------------------------------------------
 
