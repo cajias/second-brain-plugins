@@ -16,3 +16,4 @@ pytest-current
 uv-*.lock
 .envrc
 .superpowers/
+.worktrees/
