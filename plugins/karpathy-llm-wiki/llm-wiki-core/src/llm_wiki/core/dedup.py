@@ -28,6 +28,7 @@ SOURCE_CLASS_THRESHOLDS: dict[str, float] = {
     "doc": 0.93,
     "book": 0.94,
     "paper": 0.94,
+    "tool": 0.93,
 }
 
 
@@ -35,7 +36,7 @@ def resolve_threshold(source_class: str | None) -> float:
     """Map a source class label to its cosine-similarity duplicate threshold.
 
     Args:
-        source_class: One of {"chat", "doc", "book", "paper"}, or None/"" for chat default.
+        source_class: One of {"chat", "doc", "book", "paper", "tool"}, or None/"" for chat default.
 
     Returns:
         Cosine threshold above which a candidate is considered a duplicate.

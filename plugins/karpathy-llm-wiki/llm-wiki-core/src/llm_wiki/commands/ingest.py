@@ -446,7 +446,7 @@ def ingest(
     source_class: str = typer.Option(
         "chat",
         "--source-class",
-        help="Source class for dedup tuning: chat, doc, book, or paper.",
+        help="Source class for dedup tuning: chat, doc, book, paper, or tool.",
     ),
     list_pending: bool = typer.Option(
         False,

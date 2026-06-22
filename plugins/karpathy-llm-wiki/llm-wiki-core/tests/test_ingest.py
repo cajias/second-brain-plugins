@@ -344,6 +344,14 @@ class TestIngestSourceClass:
         )
         assert result.exit_code != 0
 
+    def test_tool_source_class_persisted_on_manifest(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "readme.md", "# Tool\n\nbody")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src), "--source-class", "tool"])
+        assert result.exit_code == 0, result.output
+        manifest = _read_manifest(wiki_root)
+        assert manifest[-1]["source_class"] == "tool"
+
 
 # ---------------------------------------------------------------------------
 # Slugify fallback — empty / all-non-alphanum input

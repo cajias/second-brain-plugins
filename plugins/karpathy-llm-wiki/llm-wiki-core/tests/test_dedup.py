@@ -9,7 +9,7 @@ from llm_wiki.core.dedup import SOURCE_CLASS_THRESHOLDS, resolve_threshold
 
 class TestSourceClassThresholds:
     def test_constant_has_required_keys(self):
-        assert set(SOURCE_CLASS_THRESHOLDS.keys()) == {"chat", "doc", "book", "paper"}
+        assert set(SOURCE_CLASS_THRESHOLDS.keys()) == {"chat", "doc", "book", "paper", "tool"}
 
     def test_thresholds_in_valid_range(self):
         for cls, t in SOURCE_CLASS_THRESHOLDS.items():
