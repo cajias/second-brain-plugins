@@ -31,7 +31,7 @@ def extract_main_content(html: str, url: str | None = None) -> ExtractedDoc:
     Returns:
         An ExtractedDoc; ``text`` is "" when nothing could be extracted.
     """
-    text = trafilatura.extract(html, output_format="markdown", include_links=True, url=url) or ""
+    text = trafilatura.extract(html, output_format="markdown", include_links=True, favor_recall=True, url=url) or ""
     meta = trafilatura.extract_metadata(html)
     title = getattr(meta, "title", None) if meta is not None else None
     description = getattr(meta, "description", None) if meta is not None else None

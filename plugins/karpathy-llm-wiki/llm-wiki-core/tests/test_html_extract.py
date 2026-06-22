@@ -25,3 +25,18 @@ class TestExtractMainContent:
         doc = html_extract.extract_main_content("<html></html>", url="https://x.test")
         assert doc.text == ""
         assert doc.title is None
+
+    def test_extract_forwards_required_kwargs(self, monkeypatch):
+        """Ensure extract() is called with output_format, include_links, and favor_recall."""
+        captured: dict = {}
+
+        def _capture(*_a, **kw):
+            captured.update(kw)
+            return "content"
+
+        monkeypatch.setattr(html_extract.trafilatura, "extract", _capture)
+        monkeypatch.setattr(html_extract.trafilatura, "extract_metadata", lambda _html: None)
+        html_extract.extract_main_content("<html>hi</html>", url="https://x.test")
+        assert captured.get("output_format") == "markdown"
+        assert captured.get("include_links") is True
+        assert captured.get("favor_recall") is True

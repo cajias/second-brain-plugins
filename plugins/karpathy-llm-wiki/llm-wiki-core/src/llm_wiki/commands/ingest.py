@@ -12,7 +12,6 @@ import json
 import shutil
 import uuid
 from datetime import UTC, datetime
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -23,6 +22,7 @@ import typer
 
 from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.dedup import SOURCE_CLASS_THRESHOLDS
+from llm_wiki.core.html_extract import extract_main_content
 from llm_wiki.core.text import slugify
 
 
@@ -47,26 +47,6 @@ def _timestamp() -> str:
 def _short_id() -> str:
     """Return a short unique hex ID."""
     return uuid.uuid4().hex[:8]
-
-
-class _HTMLTextExtractor(HTMLParser):
-    """Minimal HTML-to-text converter."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._pieces: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self._pieces.append(data)
-
-    def get_text(self) -> str:
-        return " ".join(self._pieces)
-
-
-def _html_to_text(html: str) -> str:
-    extractor = _HTMLTextExtractor()
-    extractor.feed(html)
-    return extractor.get_text()
 
 
 _marker_models: dict[str, Any] | None = None
@@ -266,7 +246,11 @@ def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dic
         msg = f"Failed to fetch URL: {e}"
         raise RuntimeError(msg) from e
 
-    text = _html_to_text(raw_html)
+    doc = extract_main_content(raw_html, url=source)
+    if not doc.text.strip():
+        msg = f"No content could be extracted from {source} (empty/boilerplate-only page)."
+        raise RuntimeError(msg)
+    text = doc.text
 
     slug = slugify(parsed.netloc + "-" + parsed.path, max_len=50) or "web-page"
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -274,7 +258,7 @@ def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dic
     dest_path = cfg.raw_web / dest_name
 
     dest_path.write_text(
-        f"# {source}\n\n> Fetched: {_timestamp()}\n\n{text.strip()}\n",
+        f"# {source}\n\n> Fetched: {_timestamp()}\n\nSource: {source}\n\n{text.strip()}\n",
         encoding="utf-8",
     )
 

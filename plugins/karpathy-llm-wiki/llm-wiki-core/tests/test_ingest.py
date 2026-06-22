@@ -391,3 +391,46 @@ class TestIngestSlugifyFallback:
         assert any("note" in f.name for f in md_files), (
             f"Expected 'note' fallback in filename, got: {[f.name for f in md_files]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# URL mode — trafilatura extractor
+# ---------------------------------------------------------------------------
+
+
+class TestIngestUrlTrafilatura:
+    def test_url_mode_uses_extractor(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        import io
+
+        from llm_wiki.commands import ingest as ingest_mod
+        from llm_wiki.core.html_extract import ExtractedDoc
+
+        monkeypatch.setattr(ingest_mod, "urlopen", lambda *_a, **_k: io.BytesIO(b"<html><body>raw</body></html>"))
+        monkeypatch.setattr(
+            ingest_mod,
+            "extract_main_content",
+            lambda _html, url=None: ExtractedDoc(text="# Extracted\n\nClean body.", title="T", description="D"),  # noqa: ARG005
+        )
+        result = runner.invoke(app, ["ingest", "--mode", "url", "--source", "https://example.test/page"])
+        assert result.exit_code == 0, result.output
+        web = wiki_root / "raw" / "web"
+        md = next(web.glob("*.md")).read_text()
+        assert "Clean body." in md
+
+    def test_url_empty_extraction_errors(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        import io
+
+        from llm_wiki.commands import ingest as ingest_mod
+        from llm_wiki.core.html_extract import ExtractedDoc
+
+        monkeypatch.setattr(ingest_mod, "urlopen", lambda *_a, **_k: io.BytesIO(b"<html></html>"))
+        monkeypatch.setattr(
+            ingest_mod,
+            "extract_main_content",
+            lambda _html, url=None: ExtractedDoc(text="", title=None, description=None),  # noqa: ARG005
+        )
+        result = runner.invoke(app, ["ingest", "--mode", "url", "--source", "https://example.test/empty"])
+        assert result.exit_code != 0
+        assert "no content" in result.output.lower() or "empty" in result.output.lower()
