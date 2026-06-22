@@ -10,8 +10,8 @@ from typer.testing import CliRunner
 from llm_wiki.cli import app  # noqa: F401
 from llm_wiki.commands.export_notion import (
     _build_manifest,
-    _build_sources,  # noqa: F401
-    _normalize_source,  # noqa: F401
+    _build_sources,
+    _normalize_source,
 )
 from llm_wiki.core.config import load_config
 
@@ -71,3 +71,288 @@ def test_build_manifest_maps_all_fields(populated_wiki: Path) -> None:
     assert note["source_ref"] == "ingest-aaa111"
     assert manifest["sources"][0]["ingest_id"] == "ingest-aaa111"
     assert manifest["sources"][0]["source_class"] == "web"
+
+
+def test_dangling_links_are_separated(populated_wiki: Path) -> None:
+    permanent = populated_wiki / "wiki" / "permanent"
+    _write_note(
+        permanent,
+        "links-everywhere",
+        """\
+---
+id: perm-20260410-lll01
+type: permanent
+knowledge_type: idea
+status: pending
+confidence: low
+scope: universal
+tags:
+  - llm
+source: "manual"
+created: "2026-04-10T08:00:00"
+---
+
+# Links Everywhere
+
+Real target [[orphan-note]] and a missing one [[nonexistent-note]].
+""",
+    )
+    cfg = load_config(populated_wiki)
+    manifest = _build_manifest(cfg)
+
+    by_slug = {n["slug"]: n for n in manifest["notes"]}
+    assert by_slug["links-everywhere"]["links"] == ["orphan-note"]
+    assert {"from": "links-everywhere", "target": "nonexistent-note"} in manifest["dangling"]
+    assert all(d["target"] != "orphan-note" for d in manifest["dangling"])
+
+
+def test_aliased_wikilink_resolves_to_target(populated_wiki: Path) -> None:
+    permanent = populated_wiki / "wiki" / "permanent"
+    _write_note(
+        permanent,
+        "aliased-link",
+        """\
+---
+id: perm-20260410-aaa02
+type: permanent
+knowledge_type: fact
+status: approved
+confidence: high
+scope: universal
+tags:
+  - llm
+source: "manual"
+created: "2026-04-10T09:00:00"
+---
+
+# Aliased Link
+
+See [[orphan-note|the orphan]] for details.
+""",
+    )
+    cfg = load_config(populated_wiki)
+    manifest = _build_manifest(cfg)
+    by_slug = {n["slug"]: n for n in manifest["notes"]}
+    assert by_slug["aliased-link"]["links"] == ["orphan-note"]
+
+
+def test_simplified_schema_type_field_supplies_knowledge_type(populated_wiki: Path) -> None:
+    permanent = populated_wiki / "wiki" / "permanent"
+    _write_note(
+        permanent,
+        "simplified-schema",
+        """\
+---
+type: decision
+status: approved
+confidence: medium
+scope: project
+tags:
+  - devops
+source: "manual"
+created: "2026-04-10T10:00:00"
+---
+
+# Simplified Schema Note
+
+This note uses the simplified schema where `type` holds the knowledge type.
+""",
+    )
+    cfg = load_config(populated_wiki)
+    manifest = _build_manifest(cfg)
+    by_slug = {n["slug"]: n for n in manifest["notes"]}
+    assert by_slug["simplified-schema"]["knowledge_type"] == "decision"
+
+
+def test_normalize_source_strips_whitespace_and_trailing_slash() -> None:
+    assert _normalize_source(" https://x/ ") == "https://x"
+    assert _normalize_source("https://x") == "https://x"
+    assert _normalize_source("  ") == ""
+
+
+def test_build_sources_reads_manifest_list(populated_wiki: Path) -> None:
+    _write_manifest(
+        populated_wiki,
+        [
+            {
+                "id": "ingest-src001",
+                "file": "raw/web/a.md",
+                "type": "url",
+                "source": "https://example.com/a",
+                "date": "2026-05-01T00:00:00",
+                "status": "processed",
+                "source_class": "web",
+            },
+            # Older entry missing some keys — read defensively with .get.
+            {"id": "ingest-src002", "source": "https://example.com/b"},
+        ],
+    )
+    cfg = load_config(populated_wiki)
+    sources = _build_sources(cfg)
+    assert sources[0]["ingest_id"] == "ingest-src001"
+    assert sources[0]["file"] == "raw/web/a.md"
+    assert sources[1]["ingest_id"] == "ingest-src002"
+    assert sources[1]["type"] is None  # missing key -> None, not KeyError
+    assert sources[1]["source_class"] is None
+
+
+def test_build_sources_missing_manifest_is_empty(wiki_root: Path) -> None:
+    cfg = load_config(wiki_root)
+    assert _build_sources(cfg) == []
+
+
+def test_source_ref_matches_trailing_slash_and_whitespace(populated_wiki: Path) -> None:
+    permanent = populated_wiki / "wiki" / "permanent"
+    _write_note(
+        permanent,
+        "matched-note",
+        """\
+---
+id: perm-20260411-mmm01
+type: permanent
+knowledge_type: fact
+status: approved
+confidence: high
+scope: universal
+tags:
+  - llm
+source: " https://example.com/paper "
+created: "2026-04-11T08:00:00"
+---
+
+# Matched Note
+
+Distilled from a paper.
+""",
+    )
+    _write_manifest(
+        populated_wiki,
+        [
+            {
+                "id": "ingest-match01",
+                "file": "raw/web/paper.md",
+                "type": "url",
+                "source": "https://example.com/paper/",
+                "date": "2026-04-10T00:00:00",
+                "status": "processed",
+                "source_class": "web",
+            }
+        ],
+    )
+    cfg = load_config(populated_wiki)
+    manifest = _build_manifest(cfg)
+    by_slug = {n["slug"]: n for n in manifest["notes"]}
+    # Trailing slash + whitespace differences still match.
+    assert by_slug["matched-note"]["source_ref"] == "ingest-match01"
+    # Raw source text is kept regardless of matching (YAML parses the quoted value with its spaces).
+    assert by_slug["matched-note"]["source"] == " https://example.com/paper "
+    assert "matched-note" not in manifest["unmatched_sources"]
+
+
+def test_source_ref_no_match_lists_unmatched(populated_wiki: Path) -> None:
+    permanent = populated_wiki / "wiki" / "permanent"
+    _write_note(
+        permanent,
+        "unmatched-note",
+        """\
+---
+id: perm-20260411-uuu01
+type: permanent
+knowledge_type: fact
+status: approved
+confidence: high
+scope: universal
+tags:
+  - llm
+source: "https://nowhere.example/none"
+created: "2026-04-11T09:00:00"
+---
+
+# Unmatched Note
+
+No manifest entry has this source.
+""",
+    )
+    _write_manifest(
+        populated_wiki,
+        [
+            {
+                "id": "ingest-other01",
+                "file": "raw/web/other.md",
+                "type": "url",
+                "source": "https://example.com/other",
+                "date": "2026-04-10T00:00:00",
+                "status": "processed",
+                "source_class": "web",
+            }
+        ],
+    )
+    cfg = load_config(populated_wiki)
+    manifest = _build_manifest(cfg)
+    by_slug = {n["slug"]: n for n in manifest["notes"]}
+    assert by_slug["unmatched-note"]["source_ref"] is None
+    assert "unmatched-note" in manifest["unmatched_sources"]
+
+
+def test_source_ref_multiple_matches_latest_date_wins(populated_wiki: Path) -> None:
+    permanent = populated_wiki / "wiki" / "permanent"
+    _write_note(
+        permanent,
+        "dup-source-note",
+        """\
+---
+id: perm-20260411-ddd01
+type: permanent
+knowledge_type: fact
+status: approved
+confidence: high
+scope: universal
+tags:
+  - llm
+source: "https://example.com/dup"
+created: "2026-04-11T10:00:00"
+---
+
+# Dup Source Note
+
+Ingested twice.
+""",
+    )
+    _write_manifest(
+        populated_wiki,
+        [
+            {
+                "id": "ingest-old",
+                "file": "raw/web/dup-old.md",
+                "type": "url",
+                "source": "https://example.com/dup",
+                "date": "2026-04-01T00:00:00",
+                "status": "processed",
+                "source_class": "web",
+            },
+            {
+                "id": "ingest-new",
+                "file": "raw/web/dup-new.md",
+                "type": "url",
+                "source": "https://example.com/dup",
+                "date": "2026-05-01T00:00:00",
+                "status": "processed",
+                "source_class": "web",
+            },
+        ],
+    )
+    cfg = load_config(populated_wiki)
+    manifest = _build_manifest(cfg)
+    by_slug = {n["slug"]: n for n in manifest["notes"]}
+    assert by_slug["dup-source-note"]["source_ref"] == "ingest-new"
+
+
+def test_missing_manifest_yields_null_source_refs(populated_wiki: Path) -> None:
+    # No _write_manifest call: the ingest manifest is absent.
+    cfg = load_config(populated_wiki)
+    manifest = _build_manifest(cfg)
+    assert manifest["sources"] == []
+    assert all(n["source_ref"] is None for n in manifest["notes"])
+    # Notes that HAVE a source string are still listed as unmatched.
+    sourced = [n["slug"] for n in manifest["notes"] if n["source"].strip()]
+    assert set(sourced) == set(manifest["unmatched_sources"])
