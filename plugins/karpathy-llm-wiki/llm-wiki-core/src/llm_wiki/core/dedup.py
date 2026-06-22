@@ -28,7 +28,7 @@ SOURCE_CLASS_THRESHOLDS: dict[str, float] = {
     "doc": 0.93,
     "book": 0.94,
     "paper": 0.94,
-    "tool": 0.93,
+    "tool": 0.93,  # tool READMEs/docs pages are dense and doc-like; same tolerance as "doc"
 }
 
 
