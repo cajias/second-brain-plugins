@@ -50,9 +50,16 @@ def _collect_md_files(permanent_dir: Path) -> list[Path]:
     return sorted(permanent_dir.glob("**/*.md"))
 
 
-def _tags_csv(tags: object) -> str:
-    """Serialize a tags value into a CSV string for the (current) utf8 column."""
-    return ",".join(normalize_tags(tags))
+def _collect_tags(tags_val: object) -> list[str]:
+    """Normalize a tags column value (list, ndarray, or legacy CSV string) into a flat list."""
+    if tags_val is None:
+        return []
+    if isinstance(tags_val, str):
+        return [t.strip() for t in tags_val.split(",") if t.strip()]
+    try:
+        return [str(t) for t in tags_val if t]  # type: ignore[attr-defined]
+    except TypeError:
+        return []
 
 
 def _normalize_confidence(raw: object) -> float:
@@ -79,7 +86,9 @@ def _build_record(
         "id": metadata.get("id", filepath.stem),
         "title": metadata.get("title", filepath.stem),
         "knowledge_type": metadata.get("knowledge_type", "unknown"),
-        "tags": _tags_csv(metadata.get("tags", [])),
+        "tags": normalize_tags(metadata.get("tags", [])),
+        "type": metadata.get("type", "permanent"),
+        "scope": metadata.get("scope", ""),
         "confidence": _normalize_confidence(metadata.get("confidence", 0.0)),
         "source": metadata.get("source", ""),
         "created": str(metadata.get("created", "")),
@@ -215,10 +224,7 @@ def _do_stats(cfg: WikiConfig) -> dict[str, Any]:
     stats["by_knowledge_type"] = kt_counts
 
     # By tag
-    all_tags: list[str] = []
-    for tags_str in df["tags"]:
-        if tags_str:
-            all_tags.extend(t.strip() for t in tags_str.split(",") if t.strip())
+    all_tags: list[str] = [tag for tags_val in df["tags"] for tag in _collect_tags(tags_val)]
     stats["by_tag"] = dict(Counter(all_tags).most_common())
 
     # Embedding dimensions
@@ -262,10 +268,7 @@ def _write_stats(cfg: WikiConfig) -> None:
 
         lines.append("## By Tag")
         lines.append("")
-        all_tags: list[str] = []
-        for tags_str in df["tags"]:
-            if tags_str:
-                all_tags.extend(t.strip() for t in tags_str.split(",") if t.strip())
+        all_tags: list[str] = [tag for tags_val in df["tags"] for tag in _collect_tags(tags_val)]
         if all_tags:
             for tag, count in Counter(all_tags).most_common():
                 lines.append(f"- **{tag}:** {count}")

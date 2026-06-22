@@ -147,6 +147,18 @@ class TestIndexSchema:
         assert schema.field("type").type == pa.utf8()
         assert schema.field("scope").type == pa.utf8()
 
+    def test_full_index_round_trips_list_tags(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(app, ["index", "--full"])
+        assert result.exit_code == 0
+        import json
+
+        stats = runner.invoke(app, ["index", "--stats", "--json"])
+        data = json.loads(stats.stdout)
+        # populated_wiki note 1 has tags architecture + api-design — both counted discretely
+        assert data["by_tag"].get("architecture") == 1
+        assert data["by_tag"].get("api-design") == 1
+
 
 # ---------------------------------------------------------------------------
 # Validation
