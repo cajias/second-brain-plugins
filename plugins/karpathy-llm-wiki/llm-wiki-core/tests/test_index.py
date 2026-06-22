@@ -159,6 +159,23 @@ class TestIndexSchema:
         assert data["by_tag"].get("architecture") == 1
         assert data["by_tag"].get("api-design") == 1
 
+    def test_full_index_round_trips_type_and_scope(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Type and scope fields written by _build_record survive the LanceDB round-trip."""
+        import lancedb
+
+        monkeypatch.chdir(populated_wiki)
+        runner.invoke(app, ["index", "--full"])
+
+        db = lancedb.connect(str(populated_wiki / ".lancedb"))
+        df = db.open_table("notes").to_pandas()
+
+        # All three fixture notes have type=permanent
+        assert (df["type"] == "permanent").all(), f"unexpected types: {df['type'].unique()}"
+        # api-gateway note has scope=universal (from sample_note_content fixture)
+        api_row = df[df["id"] == "perm-20260409-abc12"]
+        assert len(api_row) == 1
+        assert api_row.iloc[0]["scope"] == "universal"
+
 
 # ---------------------------------------------------------------------------
 # Validation

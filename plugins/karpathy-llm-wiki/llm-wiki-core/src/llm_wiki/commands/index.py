@@ -50,18 +50,6 @@ def _collect_md_files(permanent_dir: Path) -> list[Path]:
     return sorted(permanent_dir.glob("**/*.md"))
 
 
-def _collect_tags(tags_val: object) -> list[str]:
-    """Normalize a tags column value (list, ndarray, or legacy CSV string) into a flat list."""
-    if tags_val is None:
-        return []
-    if isinstance(tags_val, str):
-        return [t.strip() for t in tags_val.split(",") if t.strip()]
-    try:
-        return [str(t) for t in tags_val if t]  # type: ignore[attr-defined]
-    except TypeError:
-        return []
-
-
 def _normalize_confidence(raw: object) -> float:
     """Coerce a frontmatter confidence (numeric or string label) into a float."""
     if raw is None:
@@ -224,7 +212,7 @@ def _do_stats(cfg: WikiConfig) -> dict[str, Any]:
     stats["by_knowledge_type"] = kt_counts
 
     # By tag
-    all_tags: list[str] = [tag for tags_val in df["tags"] for tag in _collect_tags(tags_val)]
+    all_tags: list[str] = [tag for tags_val in df["tags"] for tag in normalize_tags(tags_val)]
     stats["by_tag"] = dict(Counter(all_tags).most_common())
 
     # Embedding dimensions
@@ -268,7 +256,7 @@ def _write_stats(cfg: WikiConfig) -> None:
 
         lines.append("## By Tag")
         lines.append("")
-        all_tags: list[str] = [tag for tags_val in df["tags"] for tag in _collect_tags(tags_val)]
+        all_tags: list[str] = [tag for tags_val in df["tags"] for tag in normalize_tags(tags_val)]
         if all_tags:
             for tag, count in Counter(all_tags).most_common():
                 lines.append(f"- **{tag}:** {count}")

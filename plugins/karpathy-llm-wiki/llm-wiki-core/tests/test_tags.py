@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from llm_wiki.core.tags import normalize_tags
 
 
@@ -23,3 +25,13 @@ class TestNormalizeTags:
 
     def test_non_string_scalar_coerced(self):
         assert normalize_tags(42) == ["42"]
+
+    def test_ndarray_two_tags(self):
+        """Numpy object arrays (from LanceDB pandas round-trip) normalize correctly."""
+        arr = np.array(["architecture", "api-design"], dtype=object)
+        assert normalize_tags(arr) == ["architecture", "api-design"]
+
+    def test_ndarray_empty(self):
+        """Empty numpy array yields empty list."""
+        arr = np.array([], dtype=object)
+        assert normalize_tags(arr) == []
