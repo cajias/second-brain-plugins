@@ -17,6 +17,7 @@ from llm_wiki.commands.charts import charts
 from llm_wiki.commands.compile_cmd import compile_notes
 from llm_wiki.commands.index import index
 from llm_wiki.commands.ingest import ingest
+from llm_wiki.commands.ingest_tool import ingest_tool
 from llm_wiki.commands.init_cmd import init
 from llm_wiki.commands.lint import lint
 from llm_wiki.commands.migrate_frontmatter import migrate_frontmatter
@@ -37,6 +38,7 @@ app = typer.Typer(
 
 app.command("init")(init)
 app.command("ingest")(ingest)
+app.command("ingest-tool")(ingest_tool)
 app.command("compile")(compile_notes)
 app.command("search")(search)
 app.command("lint")(lint)
