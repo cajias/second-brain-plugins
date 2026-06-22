@@ -1,5 +1,5 @@
 {
   "name": "karpathy-llm-wiki",
   "description": "Karpathy-style personal knowledge wiki — ingest, compile, search, and maintain a semantic knowledge base with Claude Code",
-  "version": "0.4.0"
+  "version": "0.5.0"
 }
