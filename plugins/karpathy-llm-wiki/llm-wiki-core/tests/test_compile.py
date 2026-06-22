@@ -156,6 +156,35 @@ class TestCheckDedupBatchCLI:
         assert result.exit_code != 0
 
 
+class TestWriteNoteEmptySlug:
+    """Punctuation/emoji-only title must not produce a hidden `.md` filename."""
+
+    def test_empty_slug_falls_back_to_note_id(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        """_write_note with a punctuation-only title must produce a non-empty, non-'.md' filename."""
+        import re
+
+        monkeypatch.chdir(wiki_root)
+        from llm_wiki.commands.compile_cmd import _write_note
+        from llm_wiki.core.config import load_config
+
+        cfg = load_config()
+        result = _write_note(
+            "!!!---???",  # pure punctuation — slugify returns ""
+            "concept",
+            ["llm"],
+            "high",
+            "manual",
+            "This is the body.",
+            cfg,
+        )
+        filename = result["filename"]
+        assert filename != ".md", "Empty-slug must not produce a hidden file"
+        assert not filename.startswith("."), "filename must not start with a dot"
+        assert filename.endswith(".md")
+        # The fallback filename should be the note_id (UUID-like pattern)
+        assert re.match(r"[a-z0-9-]+\.md$", filename), f"Expected id-based filename, got: {filename!r}"
+
+
 # ---------------------------------------------------------------------------
 # Write note
 # ---------------------------------------------------------------------------

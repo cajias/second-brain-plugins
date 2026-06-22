@@ -10,9 +10,6 @@ from llm_wiki.core.config import load_config
 from llm_wiki.core.embeddings import search_index
 
 
-_FILTER_ONLY_LIMIT = 10_000
-
-
 def search(  # noqa: PLR0913  # each filter is a discrete CLI dimension
     query: str | None = typer.Argument(None, help="Search query string (optional if a filter is given)."),
     knowledge_type: str | None = typer.Option(
@@ -58,7 +55,7 @@ def search(  # noqa: PLR0913  # each filter is a discrete CLI dimension
         raise typer.Exit(code=1)
 
     if limit is None:
-        limit = _FILTER_ONLY_LIMIT if query is None else cfg.query_default_limit
+        limit = None if query is None else cfg.query_default_limit
 
     try:
         results = search_index(

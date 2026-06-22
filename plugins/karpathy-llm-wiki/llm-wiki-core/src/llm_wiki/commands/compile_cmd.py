@@ -95,6 +95,7 @@ def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signa
 
     note_id = _generate_id()
     slug = slugify(title)
+    slug = slug or note_id
     filename = f"{slug}.md"
     filepath = cfg.wiki_permanent / filename
 

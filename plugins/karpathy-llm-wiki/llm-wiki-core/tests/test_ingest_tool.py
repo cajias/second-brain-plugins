@@ -265,3 +265,64 @@ class TestIngestToolRouting:
 
         body = (cfg.project_root / result["dest"]).read_text()
         assert "buildkite.com" in body
+
+
+class TestIngestToolSSRFValidation:
+    """URL scheme validation must block non-http/https inputs before urlopen."""
+
+    def test_file_scheme_rejected(self, wiki_root: Path) -> None:
+        """file:///etc/passwd must raise ValueError before any fetch."""
+        cfg = _cfg(wiki_root)
+        urlopen_called: list[str] = []
+
+        def _spy_html_fetch(url: str) -> ExtractedDoc:
+            urlopen_called.append(url)
+            return ExtractedDoc("content", "title", "desc")
+
+        with pytest.raises(ValueError, match=r"[Ss]cheme|[Uu]nsupported|[Ii]nvalid"):
+            it._ingest_tool(
+                "file:///etc/passwd",
+                cfg,
+                github_fetch=_never_github,
+                html_fetch=_spy_html_fetch,
+            )
+        assert urlopen_called == [], "urlopen must NOT be called for file:// URL"
+
+    def test_ftp_scheme_rejected(self, wiki_root: Path) -> None:
+        """ftp:// URL must raise ValueError before any fetch."""
+        cfg = _cfg(wiki_root)
+        with pytest.raises(ValueError, match=r"[Ss]cheme|[Uu]nsupported|[Ii]nvalid"):
+            it._ingest_tool(
+                "ftp://example.com/file",
+                cfg,
+                github_fetch=_never_github,
+                html_fetch=lambda _url: pytest.fail("html_fetch must not be called") or ExtractedDoc("", None, None),  # type: ignore[return-value]
+            )
+
+    def test_schemeless_url_with_netloc_rejected(self, wiki_root: Path) -> None:
+        """A schemeless URL like '//foo.com/bar' must be rejected (has netloc, no scheme)."""
+        cfg = _cfg(wiki_root)
+        with pytest.raises((ValueError, RuntimeError)):
+            it._ingest_tool(
+                "//foo.com/bar",
+                cfg,
+                github_fetch=_never_github,
+                html_fetch=lambda _url: pytest.fail("html_fetch must not be called") or ExtractedDoc("", None, None),  # type: ignore[return-value]
+            )
+
+    def test_https_url_not_blocked(self, wiki_root: Path) -> None:
+        """A normal https:// URL must still route to html_fetch (not be blocked)."""
+        cfg = _cfg(wiki_root)
+        html_called: list[str] = []
+
+        def _record_html(url: str) -> ExtractedDoc:
+            html_called.append(url)
+            return ExtractedDoc("# Tool\n\nContent.", "Tool", "A tool")
+
+        it._ingest_tool(
+            "https://example.com/tool",
+            cfg,
+            github_fetch=_never_github,
+            html_fetch=_record_html,
+        )
+        assert html_called == ["https://example.com/tool"], "https:// must reach html_fetch"
