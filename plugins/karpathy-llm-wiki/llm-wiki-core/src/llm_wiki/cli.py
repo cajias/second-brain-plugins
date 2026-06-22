@@ -15,6 +15,7 @@ import typer
 
 from llm_wiki.commands.charts import charts
 from llm_wiki.commands.compile_cmd import compile_notes
+from llm_wiki.commands.export_notion import export_notion
 from llm_wiki.commands.index import index
 from llm_wiki.commands.ingest import ingest
 from llm_wiki.commands.init_cmd import init
@@ -42,6 +43,7 @@ app.command("search")(search)
 app.command("lint")(lint)
 app.command("index")(index)
 app.command("charts")(charts)
+app.command("export-notion")(export_notion)
 app.command("migrate-frontmatter")(migrate_frontmatter)
 
 # -- Maintenance subcommand group ----------------------------------------------
