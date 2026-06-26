@@ -198,3 +198,86 @@ class TestValidate:
         errors = validate({})
         # Missing all required fields + knowledge type
         assert len(errors) >= len(REQUIRED_FIELDS) + 1
+
+
+# ---------------------------------------------------------------------------
+# reviewed — overwrite-protection enum
+# ---------------------------------------------------------------------------
+
+
+class TestReviewedField:
+    def test_reviewed_true_string_is_valid(self):
+        meta = {**CANONICAL_META, "reviewed": "true"}
+        assert validate(meta) == []
+
+    def test_reviewed_false_string_is_valid(self):
+        meta = {**CANONICAL_META, "reviewed": "false"}
+        assert validate(meta) == []
+
+    def test_reviewed_yaml_boolean_is_valid(self):
+        # `reviewed: true` in YAML parses to Python bool True, which validate()
+        # stringifies to "True". Real human-reviewed notes carry this form.
+        content = (
+            "---\n" + "\n".join(f"{k}: {v}" for k, v in SIMPLIFIED_META.items()) + "\nreviewed: true\n---\n\nBody\n"
+        )
+        meta, _ = parse(content)
+        assert meta["reviewed"] is True  # parsed as a bool, not a string
+        assert validate(meta) == []
+
+    def test_reviewed_python_bools_are_valid(self):
+        assert validate({**CANONICAL_META, "reviewed": True}) == []
+        assert validate({**CANONICAL_META, "reviewed": False}) == []
+
+    def test_reviewed_bogus_value_flagged(self):
+        meta = {**CANONICAL_META, "reviewed": "maybe"}
+        errors = validate(meta)
+        assert any("reviewed" in err for err in errors)
+
+    def test_reviewed_in_ordered_fields_after_status(self):
+        from llm_wiki.core.frontmatter import ORDERED_FIELDS
+
+        assert ORDERED_FIELDS.index("reviewed") == ORDERED_FIELDS.index("status") + 1
+
+
+# ---------------------------------------------------------------------------
+# contradiction — optional recommended-tier mapping
+# ---------------------------------------------------------------------------
+
+
+class TestContradictionField:
+    def test_valid_contradiction_accepted(self):
+        meta = {**CANONICAL_META, "contradiction": {"status": "detected", "with": "[[other-note]]"}}
+        assert validate(meta) == []
+
+    def test_absent_contradiction_is_ok(self):
+        assert validate(CANONICAL_META) == []
+
+    def test_invalid_contradiction_status_flagged(self):
+        meta = {**CANONICAL_META, "contradiction": {"status": "bogus", "with": "[[x]]"}}
+        errors = validate(meta)
+        assert any("contradiction.status" in err for err in errors)
+
+    def test_contradiction_missing_with_flagged(self):
+        meta = {**CANONICAL_META, "contradiction": {"status": "resolved"}}
+        errors = validate(meta)
+        assert any("contradiction.with" in err for err in errors)
+
+    def test_contradiction_not_a_mapping_flagged(self):
+        meta = {**CANONICAL_META, "contradiction": "just-a-string"}
+        errors = validate(meta)
+        assert any("contradiction" in err for err in errors)
+
+    def test_all_contradiction_statuses_accepted(self):
+        for status in ("detected", "review-passed", "resolved", "unresolved"):
+            meta = {**CANONICAL_META, "contradiction": {"status": status, "with": "[[x]]"}}
+            assert validate(meta) == [], f"status {status} should be valid"
+
+    def test_contradiction_mapping_dumps_as_block_yaml_and_round_trips(self):
+        meta = {**CANONICAL_META, "contradiction": {"status": "detected", "with": "[[other-note]]"}}
+        out = dump(meta, "\n# Body\n")
+        # Serialized as a YAML block mapping -- never a Python dict repr.
+        assert "contradiction:\n  status: detected\n" in out
+        assert "{'status'" not in out  # no str(dict) leakage
+        # And it survives a parse round-trip unchanged.
+        reparsed, _ = parse(out)
+        assert reparsed["contradiction"] == {"status": "detected", "with": "[[other-note]]"}

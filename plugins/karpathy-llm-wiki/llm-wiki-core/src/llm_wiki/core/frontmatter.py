@@ -40,8 +40,10 @@ REQUIRED_FIELDS = [
 RECOMMENDED_FIELDS = [
     "id",
     "status",
+    "reviewed",
     "confidence",
     "scope",
+    "contradiction",
 ]
 
 # Valid values for enum-like fields.
@@ -51,9 +53,17 @@ VALID_VALUES = {
     "type": ["permanent", *KNOWLEDGE_TYPES],
     "knowledge_type": KNOWLEDGE_TYPES,
     "status": ["pending", "approved", "archived"],
+    # PyYAML (YAML 1.1) parses the natural `reviewed: true` into Python bool
+    # True; lint/validate stringify it to "True"/"False". Accept both the bare
+    # string spellings and the bool-stringified ones so human-reviewed notes
+    # (Obsidian writes booleans) are not flagged invalid.
+    "reviewed": ["true", "false", "True", "False"],
     "confidence": ["high", "medium", "low"],
     "scope": ["universal", "project", "temporal"],
 }
+
+# Allowed lifecycle states for the optional `contradiction` mapping field.
+CONTRADICTION_STATUSES = ["detected", "review-passed", "resolved", "unresolved"]
 
 # Maximum number of tags allowed on a single note
 MAX_TAGS = 6
@@ -64,6 +74,7 @@ ORDERED_FIELDS = [
     "type",
     "knowledge_type",
     "status",
+    "reviewed",
     "confidence",
     "scope",
     "tags",
@@ -147,6 +158,12 @@ def _format_value(key: str, val: Any, in_ordered_set: bool = True) -> list[str]:
         lines.extend(f"  - {item}" for item in val)
         return lines
 
+    if isinstance(val, dict):
+        # Mapping fields (e.g. `contradiction`) serialize as a YAML block mapping
+        # via yaml so special chars are quoted -- never a Python dict repr.
+        block: str = yaml.safe_dump({key: val}, default_flow_style=False, sort_keys=False)
+        return block.rstrip("\n").split("\n")
+
     if isinstance(val, str) and (key in _QUOTED_STRING_FIELDS or not in_ordered_set):
         return [f'{key}: "{val}"']
 
@@ -189,6 +206,28 @@ def dump(metadata: dict[str, Any], body: str) -> str:
     return content
 
 
+def _validate_contradiction(metadata: dict[str, Any]) -> list[str]:
+    """Validate the optional ``contradiction`` mapping when present.
+
+    When present it must be a mapping with ``status`` in
+    :data:`CONTRADICTION_STATUSES` and a non-empty string ``with`` (an Obsidian
+    wikilink). Absent yields no errors -- the field is optional/recommended-tier.
+    """
+    value = metadata.get("contradiction")
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return ["Invalid contradiction: expected a mapping with `status` and `with`."]
+    errors: list[str] = []
+    status = value.get("status")
+    if status not in CONTRADICTION_STATUSES:
+        errors.append(f"Invalid contradiction.status: '{status}'. Expected one of: {CONTRADICTION_STATUSES}")
+    link = value.get("with")
+    if not isinstance(link, str) or not link:
+        errors.append("Invalid contradiction.with: expected a non-empty wikilink string.")
+    return errors
+
+
 def validate(metadata: dict[str, Any]) -> list[str]:
     """Validate frontmatter fields against required schema.
 
@@ -220,6 +259,8 @@ def validate(metadata: dict[str, Any]) -> list[str]:
     tags = metadata.get("tags", [])
     if isinstance(tags, list) and len(tags) > MAX_TAGS:
         errors.append(f"Too many tags ({len(tags)}). Maximum is {MAX_TAGS}.")
+
+    errors.extend(_validate_contradiction(metadata))
 
     return errors
 

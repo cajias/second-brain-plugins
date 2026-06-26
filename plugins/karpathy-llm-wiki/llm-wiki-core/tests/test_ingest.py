@@ -176,6 +176,34 @@ class TestIngestPdf:
         entries = _read_manifest(wiki_root)
         assert entries[-1]["file"].endswith(".md"), ".PDF should trigger extraction"
 
+    def test_duplicate_pdf_skip_leaves_no_orphan(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        """A duplicate PDF (same bytes, different filename) must not orphan the extracted .md.
+
+        Dedup keys on the raw PDF bytes, so two identical-content PDFs collide, but
+        their distinct stems yield distinct dest/.md filenames. The skip must clean up
+        the manifest-canonical .md *and* the copied .pdf *and* the .pdf sidecar — not
+        just the .pdf — so raw/artifacts keeps exactly one of each.
+        """
+        monkeypatch.chdir(wiki_root)
+        first = _create_source_file(tmp_path, "paper-a.pdf", "%PDF-identical-bytes")
+        second = _create_source_file(tmp_path, "paper-b.pdf", "%PDF-identical-bytes")
+
+        r1 = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(first)])
+        assert r1.exit_code == 0, r1.output
+        before = _read_manifest(wiki_root)
+
+        r2 = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(second)])
+        assert r2.exit_code == 0, r2.output
+        after = _read_manifest(wiki_root)
+        assert len(after) == len(before), "Duplicate PDF must not grow the manifest"
+
+        artifacts = wiki_root / "raw" / "artifacts"
+        md_files = list(artifacts.glob("*.md"))
+        pdf_files = list(artifacts.glob("*.pdf"))
+        assert len(md_files) == 1, f"Duplicate PDF orphaned an extracted .md: {[f.name for f in md_files]}"
+        assert len(pdf_files) == 1, f"Expected one surviving .pdf, got: {[f.name for f in pdf_files]}"
+        assert (wiki_root / after[-1]["file"]).exists(), "Surviving manifest entry points to a deleted .md"
+
 
 # ---------------------------------------------------------------------------
 # PDF error handling (outside TestIngestPdf to avoid _mock_marker fixture)
@@ -434,3 +462,60 @@ class TestIngestUrlTrafilatura:
         result = runner.invoke(app, ["ingest", "--mode", "url", "--source", "https://example.test/empty"])
         assert result.exit_code != 0
         assert "no content" in result.output.lower() or "empty" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Content-hash exact-duplicate gate
+# ---------------------------------------------------------------------------
+
+
+class TestIngestDedup:
+    """``_append_manifest`` skips appends whose content already exists in the queue."""
+
+    def test_duplicate_text_skipped(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        body = "A unique thought about idempotent ingestion"
+        first = runner.invoke(app, ["ingest", "--mode", "text", "--source", body])
+        assert first.exit_code == 0, first.output
+        before = _read_manifest(wiki_root)
+
+        second = runner.invoke(app, ["ingest", "--mode", "text", "--source", body])
+        assert second.exit_code == 0, second.output
+        after = _read_manifest(wiki_root)
+        assert len(after) == len(before), "Second identical ingest must not grow the manifest"
+
+        # The kept entry must still point at a real file: a same-second duplicate
+        # resolves to the same dest path, so the skip must not unlink the original.
+        inbox = wiki_root / "raw" / "inbox"
+        md_files = [f for f in inbox.glob("*.md") if not f.name.startswith(".")]
+        assert len(md_files) == 1, "Original inbox file must survive a duplicate skip"
+        assert (wiki_root / after[-1]["file"]).exists(), "Kept manifest entry points to a deleted file"
+
+    def test_duplicate_skip_is_whitespace_and_case_insensitive(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        runner.invoke(app, ["ingest", "--mode", "text", "--source", "Caching Beats Recompute"])
+        before = _read_manifest(wiki_root)
+
+        runner.invoke(app, ["ingest", "--mode", "text", "--source", "  caching   beats\trecompute "])
+        after = _read_manifest(wiki_root)
+        assert len(after) == len(before), "Whitespace/case-only variants must be treated as duplicates"
+
+    def test_manifest_entry_has_content_hash(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        runner.invoke(app, ["ingest", "--mode", "text", "--source", "a note that should carry a hash"])
+        entry = _read_manifest(wiki_root)[-1]
+        assert "content_hash" in entry
+        assert len(entry["content_hash"]) == 64
+
+    def test_whitespace_only_text_rejected(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(app, ["ingest", "--mode", "text", "--source", "   \n\t  "])
+        assert result.exit_code != 0
+        assert _read_manifest(wiki_root) == []
+
+    def test_whitespace_only_file_rejected(self, wiki_root: Path, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        src = _create_source_file(tmp_path, "blank.txt", "   \n  \t\n")
+        result = runner.invoke(app, ["ingest", "--mode", "file", "--source", str(src)])
+        assert result.exit_code != 0
+        assert _read_manifest(wiki_root) == []

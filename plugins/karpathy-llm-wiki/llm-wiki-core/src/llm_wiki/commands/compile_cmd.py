@@ -27,7 +27,7 @@ import typer
 from llm_wiki.commands.charts import _generate_all_charts
 from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.dedup import check_duplicate, check_duplicates_batch, resolve_threshold
-from llm_wiki.core.frontmatter import MAX_TAGS, dump
+from llm_wiki.core.frontmatter import MAX_TAGS, dump, parse_file
 from llm_wiki.core.taxonomy import load_taxonomy_safe, validate_tags
 from llm_wiki.core.text import slugify
 
@@ -68,6 +68,43 @@ def _check_dedup(query: str, cfg: WikiConfig, threshold: float) -> dict[str, Any
     return result
 
 
+def _resolve_write_target(
+    base_slug: str, note_id: str, cfg: WikiConfig, force_overwrite: bool
+) -> tuple[str, Path, str | None]:
+    """Resolve the final (filename, filepath) for a note, honoring existing files.
+
+    Returns ``(filename, filepath, skip_reason)``. When ``skip_reason`` is not
+    None the caller must skip the write: the target exists, is human-reviewed,
+    and ``force_overwrite`` was not set. Evaluated independently of dry-run so a
+    preview reports the same skip a real run would take.
+
+    Collision policy when a same-slug file already exists:
+      - reviewed + not force  -> skip (return a reason)
+      - not force             -> write a renamed ``slug-<id>.md`` sibling
+      - force                 -> overwrite the target in place
+    """
+    filename = f"{base_slug}.md"
+    filepath = cfg.wiki_permanent / filename
+    if not filepath.exists():
+        return filename, filepath, None
+
+    existing_meta, _ = parse_file(filepath)
+    if str(existing_meta.get("reviewed")).lower() == "true" and not force_overwrite:
+        reason = (
+            f"Target '{filename}' is reviewed (reviewed: "
+            f"{existing_meta.get('reviewed')}); not overwriting. "
+            "Pass --force-overwrite to overwrite it in place."
+        )
+        return filename, filepath, reason
+
+    if not force_overwrite:
+        slug = f"{base_slug}-{note_id.rsplit('-', maxsplit=1)[-1]}"
+        filename = f"{slug}.md"
+        filepath = cfg.wiki_permanent / filename
+
+    return filename, filepath, None
+
+
 def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signature
     title: str,
     knowledge_type: str,
@@ -77,6 +114,7 @@ def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signa
     body: str,
     cfg: WikiConfig,
     dry_run: bool = False,
+    force_overwrite: bool = False,
 ) -> dict[str, Any]:
     """Create a new permanent note with full frontmatter."""
     taxonomy_path = cfg.wiki_meta / "tag-taxonomy.md"
@@ -94,31 +132,8 @@ def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signa
         warnings.append(f"Too many tags ({len(tags)}). Maximum is {MAX_TAGS}.")
 
     note_id = _generate_id()
-    slug = slugify(title)
-    slug = slug or note_id
-    filename = f"{slug}.md"
-    filepath = cfg.wiki_permanent / filename
-
-    # Handle filename collision
-    if filepath.exists() and not dry_run:
-        slug = f"{slug}-{note_id.split('-')[-1]}"
-        filename = f"{slug}.md"
-        filepath = cfg.wiki_permanent / filename
-
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
-
-    metadata = {
-        "id": note_id,
-        "type": "permanent",
-        "knowledge_type": knowledge_type,
-        "status": "pending",
-        "confidence": confidence,
-        "scope": "universal",
-        "tags": tags,
-        "source": source,
-        "created": now,
-    }
-    note_content = dump(metadata, f"\n# {title}\n\n{body}\n")
+    slug = slugify(title) or note_id
+    filename, filepath, skip_reason = _resolve_write_target(slug, note_id, cfg, force_overwrite)
 
     result: dict[str, Any] = {
         "id": note_id,
@@ -132,6 +147,25 @@ def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signa
         "dry_run": dry_run,
     }
 
+    if skip_reason is not None:
+        result["skipped"] = True
+        result["reason"] = skip_reason
+        return result
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    metadata = {
+        "id": note_id,
+        "type": "permanent",
+        "knowledge_type": knowledge_type,
+        "status": "pending",
+        "confidence": confidence,
+        "scope": "universal",
+        "tags": tags,
+        "source": source,
+        "created": now,
+    }
+    note_content = dump(metadata, f"\n# {title}\n\n{body}\n")
+
     if dry_run:
         result["preview"] = note_content
         return result
@@ -139,6 +173,36 @@ def _write_note(  # noqa: PLR0913  # Note fields are intrinsic to the call signa
     cfg.wiki_permanent.mkdir(parents=True, exist_ok=True)
     filepath.write_text(note_content, encoding="utf-8")
 
+    result["written"] = True
+    return result
+
+
+def _merge_note(
+    file_path: Path,
+    body: str,
+    cfg: WikiConfig,  # noqa: ARG001  # part of the contracted (file_path, body, cfg) signature
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Append a dated ``## Update`` section to an existing note, preserving frontmatter."""
+    if not file_path.exists():
+        return {"success": False, "error": f"Merge target not found: {file_path}"}
+
+    metadata, existing_body = parse_file(file_path)
+    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+    section = f"\n## Update ({date_str})\n\n{body}\n"
+    new_body = existing_body.rstrip("\n") + "\n" + section
+    merged = dump(metadata, new_body)
+
+    result: dict[str, Any] = {
+        "success": True,
+        "filepath": str(file_path),
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        result["preview"] = merged
+        return result
+
+    file_path.write_text(merged, encoding="utf-8")
     result["written"] = True
     return result
 
@@ -429,6 +493,10 @@ def _validate_write_note_fields(  # one parameter per CLI flag
 
 def _print_write_result(result: dict[str, Any], dry_run: bool) -> None:
     """Render a write-note result as human-readable text."""
+    if result.get("skipped"):
+        typer.echo(f"SKIPPED: {result['reason']}")
+        return
+
     if result.get("warnings"):
         for w in result["warnings"]:
             typer.echo(f"WARNING: {w}")
@@ -462,6 +530,7 @@ def _handle_write_note(  # noqa: PLR0913  # Each note field is a discrete CLI in
     cfg: WikiConfig,
     dry_run: bool,
     json_output: bool,
+    force_overwrite: bool = False,
 ) -> None:
     valid_title, valid_kt, valid_tags, valid_conf, valid_source, valid_body = _validate_write_note_fields(
         title, knowledge_type, tags, confidence, source, body
@@ -476,6 +545,7 @@ def _handle_write_note(  # noqa: PLR0913  # Each note field is a discrete CLI in
         body=valid_body,
         cfg=cfg,
         dry_run=dry_run,
+        force_overwrite=force_overwrite,
     )
 
     if json_output:
@@ -483,6 +553,38 @@ def _handle_write_note(  # noqa: PLR0913  # Each note field is a discrete CLI in
     else:
         _print_write_result(result, dry_run)
 
+    if not dry_run and result.get("written"):
+        _auto_refresh_charts(cfg)
+
+
+def _print_merge_result(result: dict[str, Any], dry_run: bool) -> None:
+    """Render a merge-note result as human-readable text."""
+    if not result.get("success"):
+        typer.echo(f"Error: {result['error']}", err=True)
+        return
+    if dry_run:
+        typer.echo(f"[DRY RUN] Would append update to {result['filepath']}")
+        if result.get("preview"):
+            typer.echo("\n--- Preview ---")
+            typer.echo(result["preview"])
+            typer.echo("--- End Preview ---")
+    else:
+        typer.echo(f"Merged update into {result['filepath']}")
+
+
+def _handle_merge_note(merge_into: str, body: str | None, cfg: WikiConfig, dry_run: bool, json_output: bool) -> None:
+    if not body:
+        typer.echo("Error: --merge-into requires --body", err=True)
+        raise typer.Exit(code=1)
+    result = _merge_note(Path(merge_into), body, cfg, dry_run=dry_run)
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        _print_merge_result(result, dry_run)
+
+    if not result.get("success"):
+        raise typer.Exit(code=1)
     if not dry_run and result.get("written"):
         _auto_refresh_charts(cfg)
 
@@ -697,6 +799,12 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
     ),
     source: str | None = typer.Option(None, "--source", help="Origin description."),
     body: str | None = typer.Option(None, "--body", help="Note body content."),
+    # Merge
+    merge_into: str | None = typer.Option(
+        None,
+        "--merge-into",
+        help="Append --body as a dated update into the existing note at this path (preserves frontmatter).",
+    ),
     # Modifiers
     source_class: str | None = typer.Option(
         None,
@@ -708,6 +816,12 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
         "--dry-run",
         "-n",
         help="Preview what would be created without writing.",
+    ),
+    force_overwrite: bool = typer.Option(
+        False,
+        "--force-overwrite",
+        help="With --write-note: overwrite the target in place even if it exists or is reviewed "
+        "(default writes a renamed sibling on collision and skips reviewed targets).",
     ),
     json_output: bool = typer.Option(
         False,
@@ -738,7 +852,11 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
     elif check_dedup_batch:
         _handle_check_dedup_batch(check_dedup_batch, cfg, json_output)
     elif write_note:
-        _handle_write_note(title, knowledge_type, tags, confidence, source, body, cfg, dry_run, json_output)
+        _handle_write_note(
+            title, knowledge_type, tags, confidence, source, body, cfg, dry_run, json_output, force_overwrite
+        )
+    elif merge_into:
+        _handle_merge_note(merge_into, body, cfg, dry_run, json_output)
     elif list_inbox:
         _handle_list_inbox(cfg, candidates_only, include_maybe, json_output)
     elif mark_processed:
@@ -747,8 +865,8 @@ def compile_notes(  # noqa: PLR0913  # Each option is a discrete CLI flag
         _handle_tag_candidate(tag_candidate, verdict, score, reason, suggested_type, suggested_tags, cfg, json_output)
     else:
         typer.echo(
-            "Error: Specify one of --check-dedup, --check-dedup-batch, --write-note, --list-inbox, "
-            "--mark-processed, or --tag-candidate",
+            "Error: Specify one of --check-dedup, --check-dedup-batch, --write-note, --merge-into, "
+            "--list-inbox, --mark-processed, or --tag-candidate",
             err=True,
         )
         raise typer.Exit(code=1)

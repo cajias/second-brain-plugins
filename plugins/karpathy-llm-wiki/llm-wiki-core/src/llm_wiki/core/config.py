@@ -51,6 +51,8 @@ class WikiConfig:
     lint_index_staleness_hours: int
     lint_index_min_coverage_pct: int
     query_default_limit: int
+    embedding_provider: str
+    embedding_model: str | None
     # Keep the raw dict for backward-compat access
     _raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -173,6 +175,7 @@ def load_config(root: Path | None = None) -> WikiConfig:
     compile_cfg = raw.get("compile", {})
     lint_cfg = raw.get("lint", {})
     query_cfg = raw.get("query", {})
+    embedding_cfg = raw.get("embedding", {})
 
     def _resolve(rel: str) -> Path:
         return root / rel
@@ -198,5 +201,7 @@ def load_config(root: Path | None = None) -> WikiConfig:
         lint_index_staleness_hours=lint_cfg.get("index_staleness_hours", 24),
         lint_index_min_coverage_pct=lint_cfg.get("index_min_coverage_pct", 80),
         query_default_limit=query_cfg.get("default_limit", 10),
+        embedding_provider=embedding_cfg.get("provider", "sentence-transformers"),
+        embedding_model=embedding_cfg.get("model"),
         _raw=raw,
     )

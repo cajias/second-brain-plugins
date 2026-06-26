@@ -8,6 +8,7 @@ Supports 4 modes: session, file, url, text.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import uuid
@@ -28,7 +29,7 @@ import typer
 from llm_wiki.core.config import WikiConfig, load_config
 from llm_wiki.core.dedup import SOURCE_CLASS_THRESHOLDS
 from llm_wiki.core.html_extract import extract_main_content
-from llm_wiki.core.text import slugify
+from llm_wiki.core.text import content_hash, slugify
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +105,33 @@ def _save_manifest(path: Path, entries: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
 
 
-def _append_manifest(cfg: WikiConfig, entry: dict[str, Any]) -> None:
-    """Append an entry to the manifest queue."""
+def _append_manifest(cfg: WikiConfig, entry: dict[str, Any], dest_path: Path) -> bool:
+    """Append an entry to the manifest queue unless it duplicates existing content.
+
+    Returns True if the entry was queued; False if it was skipped as an exact-content
+    duplicate, in which case the just-written files are removed: the manifest-canonical
+    file (``entry['file']`` — e.g. the extracted .md for a PDF), the copied source
+    (``dest_path`` — e.g. the .pdf itself), and both their .meta.json sidecars. For
+    non-PDF modes ``entry['file']`` already equals ``dest_path``, so this collapses to
+    the single file + sidecar.
+    """
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
     mp = cfg.raw_inbox / ".manifest.json"
     entries = _load_manifest(mp)
+    digest = entry.get("content_hash")
+    if digest and any(e.get("content_hash") == digest for e in entries):
+        # Same-content ingests within one wall-clock second resolve to the same
+        # paths (second-granularity timestamp + deterministic slug); never unlink
+        # files an existing manifest entry still references. Guard on the
+        # manifest-canonical path so the PDF .md (not the .pdf) is the key.
+        if not any(e.get("file") == entry["file"] for e in entries):
+            for f in {cfg.project_root / entry["file"], dest_path}:
+                f.unlink(missing_ok=True)
+                (f.parent / (f.name + ".meta.json")).unlink(missing_ok=True)
+        return False
     entries.append(entry)
     _save_manifest(mp, entries)
+    return True
 
 
 def _write_meta(dest_path: Path, meta: dict[str, Any]) -> Path:
@@ -131,6 +152,11 @@ def _ingest_session(source: str, cfg: WikiConfig, source_class: str = "chat") ->
     if not source_path.exists():
         msg = f"Session file not found: {source}"
         raise FileNotFoundError(msg)
+
+    raw_bytes = source_path.read_bytes()
+    if not raw_bytes.decode("utf-8", errors="ignore").strip():
+        msg = f"Session file is empty or whitespace-only: {source}"
+        raise RuntimeError(msg)
 
     cfg.raw_sessions.mkdir(parents=True, exist_ok=True)
 
@@ -158,14 +184,16 @@ def _ingest_session(source: str, cfg: WikiConfig, source_class: str = "chat") ->
         "date": meta["date"],
         "status": "pending",
         "source_class": source_class,
+        "content_hash": hashlib.sha256(raw_bytes).hexdigest(),
     }
-    _append_manifest(cfg, manifest_entry)
+    queued = _append_manifest(cfg, manifest_entry, dest_path)
 
     return {
         "mode": "session",
         "dest": str(dest_path),
         "meta": meta,
         "manifest_id": manifest_entry["id"],
+        "queued": queued,
     }
 
 
@@ -175,6 +203,11 @@ def _ingest_file(source: str, cfg: WikiConfig, source_class: str = "chat") -> di
     if not source_path.exists():
         msg = f"File not found: {source}"
         raise FileNotFoundError(msg)
+
+    raw_bytes = source_path.read_bytes()
+    if not raw_bytes.decode("utf-8", errors="ignore").strip():
+        msg = f"File is empty or whitespace-only: {source}"
+        raise RuntimeError(msg)
 
     cfg.raw_artifacts.mkdir(parents=True, exist_ok=True)
 
@@ -222,15 +255,17 @@ def _ingest_file(source: str, cfg: WikiConfig, source_class: str = "chat") -> di
         "date": meta["date"],
         "status": "pending",
         "source_class": source_class,
+        "content_hash": hashlib.sha256(raw_bytes).hexdigest(),
         **pdf_extras_manifest,
     }
-    _append_manifest(cfg, manifest_entry)
+    queued = _append_manifest(cfg, manifest_entry, dest_path)
 
     return {
         "mode": "file",
         "dest": str(manifest_file),
         "meta": meta,
         "manifest_id": manifest_entry["id"],
+        "queued": queued,
     }
 
 
@@ -284,14 +319,16 @@ def _ingest_url(source: str, cfg: WikiConfig, source_class: str = "chat") -> dic
         "date": meta["date"],
         "status": "pending",
         "source_class": source_class,
+        "content_hash": content_hash(text),
     }
-    _append_manifest(cfg, manifest_entry)
+    queued = _append_manifest(cfg, manifest_entry, dest_path)
 
     return {
         "mode": "url",
         "dest": str(dest_path),
         "meta": meta,
         "manifest_id": manifest_entry["id"],
+        "queued": queued,
     }
 
 
@@ -310,6 +347,10 @@ def _ingest_text(
         source: The source label written to the sidecar and manifest
             (defaults to ``"inline-text"``; pass a URL for tool ingestion).
     """
+    if not body.strip():
+        msg = "Cannot ingest empty or whitespace-only text"
+        raise RuntimeError(msg)
+
     cfg.raw_inbox.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -339,14 +380,16 @@ def _ingest_text(
         "date": meta["date"],
         "status": "pending",
         "source_class": source_class,
+        "content_hash": content_hash(body),
     }
-    _append_manifest(cfg, manifest_entry)
+    queued = _append_manifest(cfg, manifest_entry, dest_path)
 
     return {
         "mode": "text",
         "dest": str(dest_path),
         "meta": meta,
         "manifest_id": manifest_entry["id"],
+        "queued": queued,
     }
 
 
@@ -419,6 +462,9 @@ def _print_ingest_result(result: dict[str, Any], json_output: bool) -> None:
     """Render an ingest result as JSON or human-readable text."""
     if json_output:
         typer.echo(json.dumps(result, indent=2, default=str))
+        return
+    if not result.get("queued", True):
+        typer.echo(f"\nSkipped ({result['mode']}): exact duplicate already in the queue.")
         return
     typer.echo(f"\nIngested ({result['mode']}):")
     typer.echo(f"  Destination: {result['dest']}")

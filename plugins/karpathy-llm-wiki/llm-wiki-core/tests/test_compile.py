@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from llm_wiki.cli import app
 from llm_wiki.commands.compile_cmd import _tag_candidate
+from llm_wiki.core.frontmatter import parse_file
 
 
 if TYPE_CHECKING:
@@ -435,6 +436,8 @@ def _make_cfg(tmp_path: Path):
         output=tmp_path / "output",
         fleeting=tmp_path / "fleeting",
         db_path=tmp_path / ".lancedb",
+        embedding_provider="sentence-transformers",
+        embedding_model=None,
         table_name="notes",
         compile_batch_size=10,
         auto_link_threshold=0.75,
@@ -780,3 +783,238 @@ class TestCheckDedupSourceClass:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["threshold"] == 0.92
+
+
+# ---------------------------------------------------------------------------
+# reviewed:true overwrite protection
+# ---------------------------------------------------------------------------
+
+
+class TestReviewedOverwriteProtection:
+    """``_write_note`` must not clobber a human-reviewed note unless forced."""
+
+    REVIEWED_NOTE = (
+        "---\n"
+        "id: perm-20260101-aaaaa\n"
+        "type: permanent\n"
+        "knowledge_type: pattern\n"
+        "status: approved\n"
+        "reviewed: true\n"
+        "confidence: high\n"
+        "scope: universal\n"
+        "tags:\n  - llm\n"
+        'source: "manual"\n'
+        'created: "2026-01-01T00:00:00"\n'
+        "---\n\n# Test Note\n\nOriginal reviewed body.\n"
+    )
+
+    def test_reviewed_blocks_overwrite(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(wiki_root)
+        from llm_wiki.commands.compile_cmd import _write_note
+        from llm_wiki.core.config import load_config
+
+        permanent = wiki_root / "wiki" / "permanent"
+        existing = permanent / "test-note.md"  # slugify("Test Note") == "test-note"
+        existing.write_text(self.REVIEWED_NOTE)
+        original = existing.read_text()
+
+        cfg = load_config()
+        result = _write_note("Test Note", "pattern", ["llm"], "high", "manual", "New body", cfg)
+
+        assert result.get("skipped") is True
+        assert "reviewed" in result["reason"].lower()
+        assert existing.read_text() == original  # untouched
+        assert list(permanent.glob("test-note-*.md")) == []  # no sibling written
+
+    def test_force_overwrite_replaces_reviewed_in_place(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(wiki_root)
+        from llm_wiki.commands.compile_cmd import _write_note
+        from llm_wiki.core.config import load_config
+
+        permanent = wiki_root / "wiki" / "permanent"
+        existing = permanent / "test-note.md"
+        existing.write_text(self.REVIEWED_NOTE)
+
+        cfg = load_config()
+        result = _write_note("Test Note", "pattern", ["llm"], "high", "manual", "New body", cfg, force_overwrite=True)
+
+        assert not result.get("skipped")
+        assert result.get("written") is True
+        # --force-overwrite overwrites the target in place: same file, new body, no sibling.
+        assert result["filename"] == "test-note.md"
+        assert "New body" in existing.read_text()
+        assert "Original reviewed body." not in existing.read_text()
+        assert len(list(permanent.glob("test-note*.md"))) == 1  # overwritten in place, no sibling
+
+    def test_dry_run_reviewed_reports_skip_and_writes_nothing(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        """--dry-run against a reviewed target must preview the SKIP a real run would take."""
+        monkeypatch.chdir(wiki_root)
+        permanent = wiki_root / "wiki" / "permanent"
+        existing = permanent / "test-note.md"
+        existing.write_text(self.REVIEWED_NOTE)
+        original = existing.read_text()
+
+        result = runner.invoke(app, [*self._cli_write_args(), "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "SKIPPED" in result.output
+        assert existing.read_text() == original  # untouched
+        assert list(permanent.glob("test-note-*.md")) == []  # no sibling written
+
+    def test_non_reviewed_collision_writes_sibling(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        """A same-slug collision with a NOT-reviewed note writes a renamed sibling (default, no force)."""
+        monkeypatch.chdir(wiki_root)
+        from llm_wiki.commands.compile_cmd import _write_note
+        from llm_wiki.core.config import load_config
+
+        permanent = wiki_root / "wiki" / "permanent"
+        existing = permanent / "test-note.md"  # slugify("Test Note") == "test-note"
+        existing.write_text(
+            "---\nid: perm-20260101-ccccc\ntype: permanent\nknowledge_type: pattern\n"
+            'tags:\n  - llm\nsource: "manual"\ncreated: "2026-01-01T00:00:00"\n'
+            "---\n\n# Test Note\n\nFirst body.\n"
+        )
+        original = existing.read_text()
+
+        cfg = load_config()
+        result = _write_note("Test Note", "pattern", ["llm"], "high", "manual", "Second body", cfg)
+
+        assert not result.get("skipped")
+        assert result.get("written") is True
+        assert result["filename"].startswith("test-note-")  # renamed sibling, not the original slug
+        assert existing.read_text() == original  # original untouched
+        assert len(list(permanent.glob("test-note*.md"))) == 2  # sibling written alongside
+
+    def _cli_write_args(self, **overrides) -> list[str]:
+        defaults = {
+            "title": "Test Note",  # slugify -> "test-note", collides REVIEWED_NOTE
+            "knowledge-type": "pattern",
+            "tags": "llm",
+            "confidence": "high",
+            "source": "manual",
+            "body": "New body",
+        }
+        defaults.update(overrides)
+        args = ["compile", "--write-note"]
+        for key, val in defaults.items():
+            args.extend([f"--{key}", val])
+        return args
+
+    def test_cli_reviewed_blocks_overwrite(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        """The Typer command wiring honors the reviewed skip-gate end to end."""
+        monkeypatch.chdir(wiki_root)
+        permanent = wiki_root / "wiki" / "permanent"
+        existing = permanent / "test-note.md"
+        existing.write_text(self.REVIEWED_NOTE)
+        original = existing.read_text()
+
+        result = runner.invoke(app, self._cli_write_args())
+        assert result.exit_code == 0, result.output
+        assert "SKIPPED" in result.output
+        assert existing.read_text() == original  # untouched
+        assert list(permanent.glob("test-note-*.md")) == []  # no sibling written
+
+    def test_cli_force_overwrite_flag_overwrites_in_place(self, wiki_root: Path, monkeypatch, mock_embedding_model):
+        """`--force-overwrite` overwrites the reviewed target in place through the Typer command."""
+        monkeypatch.chdir(wiki_root)
+        permanent = wiki_root / "wiki" / "permanent"
+        existing = permanent / "test-note.md"
+        existing.write_text(self.REVIEWED_NOTE)
+
+        result = runner.invoke(app, [*self._cli_write_args(), "--force-overwrite"])
+        assert result.exit_code == 0, result.output
+        assert "SKIPPED" not in result.output
+        assert "New body" in existing.read_text()  # reviewed note replaced in place
+        assert len(list(permanent.glob("test-note*.md"))) == 1  # no sibling written
+
+
+# ---------------------------------------------------------------------------
+# reviewed boolean — kb lint must accept the natural YAML form
+# ---------------------------------------------------------------------------
+
+
+class TestReviewedBooleanLint:
+    """`kb lint` (the command users actually run) must not flag `reviewed: true`."""
+
+    BOOLEAN_REVIEWED_NOTE = (
+        "---\n"
+        "id: perm-20260101-bbbbb\n"
+        "type: permanent\n"
+        "knowledge_type: pattern\n"
+        "status: approved\n"
+        "reviewed: true\n"  # YAML boolean -> Python True, NOT the string "true"
+        "confidence: high\n"
+        "scope: universal\n"
+        "tags:\n  - llm\n"
+        'source: "manual"\n'
+        'created: "2026-01-01T00:00:00"\n'
+        "---\n\n# Boolean Reviewed Note\n\nBody.\n"
+    )
+
+    def test_boolean_reviewed_not_flagged_by_lint(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        permanent = wiki_root / "wiki" / "permanent"
+        note = permanent / "boolean-reviewed-note.md"
+        note.write_text(self.BOOLEAN_REVIEWED_NOTE)
+
+        # Real notes carry a Python bool here, not a string — the exact case the
+        # string-only ['true','false'] enum used to reject.
+        meta, _ = parse_file(note)
+        assert meta["reviewed"] is True
+
+        result = runner.invoke(app, ["lint", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        entry = next(f for f in data["frontmatter"] if f["file"] == "boolean-reviewed-note.md")
+        assert "reviewed" not in entry["invalid_values"], entry["invalid_values"]
+
+
+# ---------------------------------------------------------------------------
+# Merge into an existing note
+# ---------------------------------------------------------------------------
+
+
+class TestMergeInto:
+    """``kb compile --merge-into`` appends a dated update, preserving frontmatter."""
+
+    def test_merge_into_appends_preserving_frontmatter(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(populated_wiki)
+        target = populated_wiki / "wiki" / "permanent" / "token-refresh-strategy.md"
+        before_meta, _ = parse_file(target)
+
+        result = runner.invoke(
+            app,
+            ["compile", "--merge-into", str(target), "--body", "Newly discovered rotation nuance."],
+        )
+        assert result.exit_code == 0, result.output
+
+        content = target.read_text()
+        assert "## Update (" in content
+        assert "Newly discovered rotation nuance." in content
+        assert "Use rotating refresh tokens" in content  # original body retained
+
+        after_meta, _ = parse_file(target)
+        assert after_meta["id"] == before_meta["id"]
+        assert after_meta["knowledge_type"] == before_meta["knowledge_type"]
+        assert after_meta["tags"] == before_meta["tags"]
+        assert after_meta["source"] == before_meta["source"]
+
+    def test_merge_into_dry_run_does_not_write(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        monkeypatch.chdir(populated_wiki)
+        target = populated_wiki / "wiki" / "permanent" / "token-refresh-strategy.md"
+        before = target.read_text()
+
+        result = runner.invoke(
+            app,
+            ["compile", "--merge-into", str(target), "--body", "X", "--dry-run"],
+        )
+        assert result.exit_code == 0, result.output
+        assert target.read_text() == before  # nothing written
+        assert "dry run" in result.output.lower()
+
+    def test_merge_into_missing_target_errors(self, wiki_root: Path, monkeypatch):
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(
+            app,
+            ["compile", "--merge-into", str(wiki_root / "wiki" / "permanent" / "nope.md"), "--body", "X"],
+        )
+        assert result.exit_code != 0
