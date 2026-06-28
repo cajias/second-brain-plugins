@@ -1,6 +1,6 @@
 [project]
 name = "karpathy-llm-wiki"
-version = "0.5.0"
+version = "0.6.0"
 description = "Karpathy-style personal knowledge wiki — CLI for ingesting, compiling, searching, and maintaining a semantic knowledge base"
 requires-python = ">=3.11"
 dependencies = [
