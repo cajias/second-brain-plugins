@@ -108,6 +108,39 @@ When reviewing notes (quality-reviewer use case):
 - `confidence: low` should be speculative or from a single source
 - If the evidence doesn't match the confidence level, adjust it
 
+## Contradiction Tracking
+
+A note may carry an **optional** `contradiction` mapping (recommended-tier -- its absence is
+never a lint error) recording that the note conflicts with another note:
+
+```yaml
+contradiction:
+  status: detected        # detected | review-passed | resolved | unresolved
+  with: "[[other-note]]"  # Obsidian wikilink to the conflicting note
+```
+
+This is **separate** from the note-level `status` field (pending/approved/archived) -- the
+contradiction state always lives nested under `contradiction.status`, never at the top level.
+The state moves through a fixed flow:
+
+| `contradiction.status` | Meaning | Set by |
+|------------------------|---------|--------|
+| `detected` | A conflict with `with` was surfaced (e.g. during compile or review) and awaits adjudication | detection step |
+| `review-passed` | A reviewer confirmed the conflict is genuine | quality-reviewer |
+| `resolved` | The conflict was reconciled (a note was corrected, merged, or superseded) | quality-reviewer |
+| `unresolved` | A genuine, still-open tension worth keeping on record | quality-reviewer |
+
+The `quality-reviewer` agent adjudicates every `detected` candidate: confirm it
+(`review-passed`), then mark it `resolved` or `unresolved`. A false positive has the
+`contradiction` field cleared. Only set this field on notes already flagged `detected` --
+don't invent contradictions during a routine lint.
+
+**How to mutate it:** there is no `kb` command for `contradiction.status`, so the reviewer
+edits the `contradiction` mapping in the note's frontmatter by hand (Write/Edit). This is the
+one sanctioned manual frontmatter edit -- it does not contradict the `compile-note` skill's
+"always use `kb`, never Write/Edit" rule, which governs note *creation*. Touch only the
+`contradiction` mapping; leave every other field untouched.
+
 ## Report Format
 
 ```

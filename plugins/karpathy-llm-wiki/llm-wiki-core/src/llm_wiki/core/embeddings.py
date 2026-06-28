@@ -1,17 +1,20 @@
 """Embedding generation and LanceDB vector operations.
 
-Provides lazy-loaded sentence-transformers model, batch embedding generation,
-and LanceDB table management (create, upsert, search).
+Provides a lazily loaded, pluggable embedding backend (sentence-transformers by
+default, optionally Ollama or OpenAI), batch embedding generation, and LanceDB
+table management (create, upsert, search).
 """
 
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import lancedb
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
+from llm_wiki.core.config import load_config
 from llm_wiki.core.tags import normalize_tags
 
 
@@ -22,22 +25,98 @@ if TYPE_CHECKING:
 MODEL_NAME = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
 
+# Embedding provider identifiers (see .kb-config.yml `embedding.provider`).
+DEFAULT_PROVIDER = "sentence-transformers"
+DEFAULT_OLLAMA_MODEL = "nomic-embed-text"
+DEFAULT_OPENAI_MODEL = "text-embedding-3-small"
+
+# A duck-typed embedding backend exposing ``.encode(texts) -> ndarray``.
+# Aliased rather than a Protocol because the sentence-transformers types are
+# already untyped (ignore_missing_imports), so a Protocol would add no safety.
+EmbeddingModel: TypeAlias = Any
+
 # Threshold above which sentence-transformers shows a progress bar during encoding.
 _PROGRESS_BAR_BATCH_THRESHOLD = 10
 
 # Module-level cache for the model
-_model: SentenceTransformer | None = None
+_model: EmbeddingModel | None = None
 
 
-def get_model() -> SentenceTransformer:
-    """Lazily load and cache the sentence-transformers embedding model.
+class _OllamaEmbedder:
+    """Embeds text via a local Ollama server using the optional `ollama` package."""
+
+    def __init__(self, model_name: str) -> None:
+        try:
+            import ollama  # type: ignore[import-not-found, unused-ignore]  # noqa: PLC0415
+        except ImportError as exc:
+            msg = "embedding_provider 'ollama' requires the 'ollama' package (pip install ollama)."
+            raise RuntimeError(msg) from exc
+        self._ollama = ollama
+        self._model_name = model_name
+
+    def encode(self, texts: list[str], **_kwargs: object) -> EmbeddingModel:
+        vectors = [self._ollama.embeddings(model=self._model_name, prompt=text)["embedding"] for text in texts]
+        return np.array(vectors)
+
+
+class _OpenAIEmbedder:
+    """Embeds text via the OpenAI embeddings API using the optional `openai` package."""
+
+    def __init__(self, model_name: str) -> None:
+        try:
+            import openai  # type: ignore[import-not-found, unused-ignore]  # noqa: PLC0415
+        except ImportError as exc:
+            msg = "embedding_provider 'openai' requires the 'openai' package (pip install openai)."
+            raise RuntimeError(msg) from exc
+        self._client = openai.OpenAI()
+        self._model_name = model_name
+
+    def encode(self, texts: list[str], **_kwargs: object) -> EmbeddingModel:
+        response = self._client.embeddings.create(model=self._model_name, input=texts)
+        return np.array([item.embedding for item in response.data])
+
+
+def _resolve_provider() -> tuple[str, str | None]:
+    """Read the embedding provider/model from config, defaulting to sentence-transformers.
 
     Returns:
-        A SentenceTransformer model instance.
+        A (provider, model_name) pair. When no .kb-config.yml is found the
+        default local sentence-transformers model is used, so callers outside a
+        wiki keep working.
+    """
+    try:
+        cfg = load_config()
+    except FileNotFoundError:
+        return DEFAULT_PROVIDER, None
+    return cfg.embedding_provider, cfg.embedding_model
+
+
+def _build_embedder(provider: str, model_name: str | None) -> EmbeddingModel:
+    """Construct the embedding backend for the configured provider."""
+    if provider == DEFAULT_PROVIDER:
+        return SentenceTransformer(model_name or MODEL_NAME)
+    if provider == "ollama":
+        return _OllamaEmbedder(model_name or DEFAULT_OLLAMA_MODEL)
+    if provider == "openai":
+        return _OpenAIEmbedder(model_name or DEFAULT_OPENAI_MODEL)
+    msg = f"Unknown embedding_provider {provider!r} (expected sentence-transformers, ollama, or openai)."
+    raise ValueError(msg)
+
+
+def get_model() -> EmbeddingModel:
+    """Lazily load and cache the configured embedding backend.
+
+    The provider/model are read from .kb-config.yml (``embedding.provider`` /
+    ``embedding.model``). When unset, the default local sentence-transformers
+    model is used so existing wikis behave identically.
+
+    Returns:
+        An embedding backend exposing ``.encode(texts) -> ndarray``.
     """
     global _model  # noqa: PLW0603  # module-level cache for the embedding model
     if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
+        provider, model_name = _resolve_provider()
+        _model = _build_embedder(provider, model_name)
     return _model
 
 

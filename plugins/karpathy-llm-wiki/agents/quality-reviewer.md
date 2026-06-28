@@ -26,9 +26,11 @@ You are the knowledge quality reviewer. Your job is to audit recently created no
 
 4. **Fix issues**: Follow the `lint-and-repair` skill's auto-repair guidelines -- be conservative, only change what's clearly wrong. Flag ambiguous cases.
 
-5. **Run lint**: `kb lint --json` to verify no rogue tags or broken links were introduced.
+5. **Adjudicate contradictions**: For any note flagged with `contradiction.status: detected`, decide whether the conflict is genuine. Confirm it (set `review-passed`), then mark it `resolved` (reconciled -- a note was corrected, merged, or superseded) or `unresolved` (a real, still-open tension); clear the `contradiction` field on false positives. You are the adjudicator that sets `contradiction.status` -- see the `lint-and-repair` skill's **Contradiction Tracking** section.
 
-6. **Report**: Follow the `lint-and-repair` skill's report format.
+6. **Run lint**: `kb lint --json` to verify no rogue tags or broken links were introduced.
+
+7. **Report**: Follow the `lint-and-repair` skill's report format.
 
 ## Guidelines
 

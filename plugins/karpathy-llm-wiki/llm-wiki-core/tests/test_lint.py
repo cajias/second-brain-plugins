@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from typer.testing import CliRunner
 
 from llm_wiki.cli import app
+from llm_wiki.core.frontmatter import parse
 
 
 if TYPE_CHECKING:
@@ -284,3 +285,208 @@ class TestLintEmptyWiki:
         assert data["note_count"] == 0
         assert data["orphans"] == []
         assert data["broken_links"] == []
+        assert data["contradictions"] == []
+
+
+# ---------------------------------------------------------------------------
+# Contradiction detection
+# ---------------------------------------------------------------------------
+
+
+class TestContradictionDetection:
+    """``kb lint --contradictions`` surfaces close-but-distinct notes."""
+
+    def test_contradictions_empty_by_default(self, populated_wiki: Path, monkeypatch):
+        """Detection is opt-in; the key is present but empty without --contradictions."""
+        data = _lint_json(populated_wiki, monkeypatch)
+        assert data["contradictions"] == []
+
+    def test_detects_contradiction(self, populated_wiki: Path, monkeypatch):
+        """A similarity match in the contradiction band is reported as `detected`."""
+        permanent = populated_wiki / "wiki" / "permanent"
+        other = str(permanent / "token-refresh-strategy.md")
+
+        def fake_batch(queries, db_path, table_name, threshold=0.85):
+            # Only the first note (api-gateway-auth-pattern.md, sorted first) gets a
+            # match in the [0.85, 0.92) band; the rest are unique.
+            results = []
+            for i, _query in enumerate(queries):
+                if i == 0:
+                    results.append(
+                        {
+                            "status": "similar",
+                            "top_score": 0.88,
+                            "matches": [
+                                {
+                                    "title": "Token Refresh Strategy",
+                                    "score": 0.88,
+                                    "file_path": other,
+                                    "snippet": "...",
+                                }
+                            ],
+                        }
+                    )
+                else:
+                    results.append({"status": "unique", "top_score": 0.0, "matches": []})
+            return results
+
+        monkeypatch.setattr("llm_wiki.commands.lint.check_duplicates_batch", fake_batch)
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(app, ["lint", "--contradictions", "--json"])
+        assert result.exit_code == 0, result.stdout
+        contradictions = json.loads(result.stdout)["contradictions"]
+        assert len(contradictions) == 1
+        entry = contradictions[0]
+        assert entry["file"] == "api-gateway-auth-pattern.md"
+        assert entry["contradiction"]["status"] == "detected"
+        assert entry["contradiction"]["with"] == "[[token-refresh-strategy]]"
+
+    def test_near_duplicate_is_not_a_contradiction(self, populated_wiki: Path, monkeypatch):
+        """A >= 0.92 match is a duplicate, not a contradiction, and is skipped."""
+        permanent = populated_wiki / "wiki" / "permanent"
+        other = str(permanent / "token-refresh-strategy.md")
+
+        def fake_batch(queries, db_path, table_name, threshold=0.85):
+            dup = {
+                "status": "duplicate",
+                "top_score": 0.97,
+                "matches": [{"title": "x", "score": 0.97, "file_path": other, "snippet": "..."}],
+            }
+            return [
+                dup if i == 0 else {"status": "unique", "top_score": 0.0, "matches": []} for i in range(len(queries))
+            ]
+
+        monkeypatch.setattr("llm_wiki.commands.lint.check_duplicates_batch", fake_batch)
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(app, ["lint", "--contradictions", "--json"])
+        assert result.exit_code == 0, result.stdout
+        assert json.loads(result.stdout)["contradictions"] == []
+
+    def test_excludes_empty_body_notes(self, populated_wiki: Path, monkeypatch):
+        """Whitespace-only-body notes are never embedded nor reported as candidates."""
+        permanent = populated_wiki / "wiki" / "permanent"
+        # A parseable note whose body is whitespace-only -- it must be skipped
+        # *before* the batch so it neither wastes an embedding nor flags.
+        (permanent / "blank-body-note.md").write_text("""\
+---
+id: perm-20260406-blank1
+type: permanent
+knowledge_type: idea
+status: pending
+confidence: low
+scope: project
+tags:
+  - llm
+source: "manual"
+created: "2026-04-06T08:00:00"
+---
+
+""")
+
+        captured: dict[str, list[str]] = {}
+
+        def fake_batch(queries, db_path, table_name, threshold=0.85):
+            captured["queries"] = list(queries)
+            return [{"status": "unique", "top_score": 0.0, "matches": []} for _ in queries]
+
+        monkeypatch.setattr("llm_wiki.commands.lint.check_duplicates_batch", fake_batch)
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(app, ["lint", "--contradictions", "--json"])
+        assert result.exit_code == 0, result.stdout
+
+        # The whitespace body never reaches the embedding batch.
+        assert all(q.strip() for q in captured["queries"])
+        # Only the three non-empty fixture notes were embedded.
+        assert len(captured["queries"]) == 3
+
+        contradictions = json.loads(result.stdout)["contradictions"]
+        assert all(c["file"] != "blank-body-note.md" for c in contradictions)
+
+
+# ---------------------------------------------------------------------------
+# Smart fix-all
+# ---------------------------------------------------------------------------
+
+
+class TestSmartFixAll:
+    """``kb lint --fix`` previews repairs; ``--apply`` writes the safe ones."""
+
+    def test_fix_fills_missing_frontmatter(self, wiki_root: Path, sample_note_missing_fields: str, monkeypatch):
+        permanent = wiki_root / "wiki" / "permanent"
+        note = permanent / "incomplete-note.md"
+        note.write_text(sample_note_missing_fields)
+
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(app, ["lint", "--fix", "--apply"])
+        assert result.exit_code == 0, result.stdout
+
+        meta, _ = parse(note.read_text())
+        assert meta["status"] == "pending"
+        assert meta["confidence"] == "medium"
+        assert meta["scope"] == "universal"
+        assert meta["source"]
+        assert meta["created"]
+
+    def test_fix_replaces_rogue_tag(self, wiki_root: Path, monkeypatch):
+        permanent = wiki_root / "wiki" / "permanent"
+        note = permanent / "typo-tags.md"
+        note.write_text("""\
+---
+id: perm-20260409-typo1
+type: permanent
+knowledge_type: fact
+status: approved
+confidence: medium
+scope: universal
+tags:
+  - secuirty
+  - performnce
+source: "manual"
+created: "2026-04-09T12:00:00"
+---
+
+# Typo Tags
+""")
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(app, ["lint", "--fix", "--apply"])
+        assert result.exit_code == 0, result.stdout
+
+        meta, _ = parse(note.read_text())
+        assert "security" in meta["tags"]
+        assert "performance" in meta["tags"]
+        assert "secuirty" not in meta["tags"]
+
+    def test_dry_run_writes_nothing(self, wiki_root: Path, sample_note_missing_fields: str, monkeypatch):
+        """Default --fix (no --apply) prints a plan but leaves files byte-identical."""
+        permanent = wiki_root / "wiki" / "permanent"
+        note = permanent / "incomplete-note.md"
+        note.write_text(sample_note_missing_fields)
+        before = note.read_text()
+
+        monkeypatch.chdir(wiki_root)
+        result = runner.invoke(app, ["lint", "--fix"])
+        assert result.exit_code == 0, result.stdout
+        assert note.read_text() == before
+        assert "dry run" in result.stdout.lower()
+
+    def test_fix_survives_vector_backend_failure(self, populated_wiki: Path, monkeypatch):
+        """``--fix`` must not crash if the vector backend dies while suggesting links.
+
+        Orphan suggestions are optional, so a failing ``search_index`` degrades to
+        "no suggestion" (None) rather than propagating and aborting the fix run.
+        """
+
+        def boom(*_args, **_kwargs):
+            msg = "vector backend unavailable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr("llm_wiki.commands.lint.search_index", boom)
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(app, ["lint", "--fix", "--json"])
+        assert result.exit_code == 0, result.stdout
+
+        plan = json.loads(result.stdout)
+        # orphan-note.md is flagged but with no suggested link (backend failed).
+        flagged = {o["file"]: o for o in plan["orphans_flagged"]}
+        assert "orphan-note.md" in flagged
+        assert flagged["orphan-note.md"]["suggested_link_from"] is None

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from llm_wiki.core import embeddings
 from llm_wiki.core.config import WikiConfig, get_project_root, load_config, load_raw_config
 
 
@@ -120,6 +123,19 @@ class TestLoadConfig:
         cfg = load_config(root=wiki_root)
         assert cfg.query_default_limit == 10
 
+    def test_embedding_defaults_when_unset(self, wiki_root: Path):
+        """With no `embedding` section the default sentence-transformers provider is used."""
+        cfg = load_config(root=wiki_root)
+        assert cfg.embedding_provider == "sentence-transformers"
+        assert cfg.embedding_model is None
+
+    def test_parses_embedding_section(self, tmp_path: Path):
+        """An explicit `embedding` section overrides the provider/model."""
+        (tmp_path / ".kb-config.yml").write_text("embedding:\n  provider: ollama\n  model: nomic-embed-text\n")
+        cfg = load_config(root=tmp_path)
+        assert cfg.embedding_provider == "ollama"
+        assert cfg.embedding_model == "nomic-embed-text"
+
     def test_error_when_no_config(self, wiki_root_bare: Path):
         with pytest.raises(FileNotFoundError):
             load_config(root=wiki_root_bare)
@@ -147,6 +163,51 @@ class TestGetPath:
         cfg = load_config(root=wiki_root)
         with pytest.raises(KeyError):
             cfg.get_path("nonexistent.key.path")
+
+
+# ---------------------------------------------------------------------------
+# Embedding provider dispatch (embeddings.get_model)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingProviderSwitch:
+    """get_model() dispatches to the provider named in config (mocked, no network)."""
+
+    @pytest.mark.parametrize("provider", ["ollama", "openai"])
+    def test_provider_switch_routes_to_package(self, provider, monkeypatch):
+        """Selecting ollama/openai embeds through that package, not sentence-transformers."""
+        vec = [0.1, 0.2, 0.3]
+
+        def fake_ollama_embeddings(**kwargs):
+            return {"embedding": vec}
+
+        def fake_openai_create(**kwargs):
+            return SimpleNamespace(data=[SimpleNamespace(embedding=vec) for _ in kwargs["input"]])
+
+        fake_ollama = SimpleNamespace(embeddings=fake_ollama_embeddings)
+        fake_openai = SimpleNamespace(
+            OpenAI=lambda: SimpleNamespace(embeddings=SimpleNamespace(create=fake_openai_create)),
+        )
+        monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+        monkeypatch.setitem(sys.modules, "openai", fake_openai)
+        monkeypatch.setattr(
+            embeddings,
+            "load_config",
+            lambda: SimpleNamespace(embedding_provider=provider, embedding_model="test-model"),
+        )
+        monkeypatch.setattr(embeddings, "_model", None)
+
+        assert embeddings.embed_texts(["a", "b"]) == [vec, vec]
+
+    def test_unknown_provider_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            embeddings,
+            "load_config",
+            lambda: SimpleNamespace(embedding_provider="bogus", embedding_model=None),
+        )
+        monkeypatch.setattr(embeddings, "_model", None)
+        with pytest.raises(ValueError, match="Unknown embedding_provider"):
+            embeddings.get_model()
 
 
 # ---------------------------------------------------------------------------
