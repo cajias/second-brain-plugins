@@ -189,8 +189,11 @@ def _merge_note(
 
     metadata, existing_body = parse_file(file_path)
     date_str = datetime.now(UTC).strftime("%Y-%m-%d")
-    section = f"\n## Update ({date_str})\n\n{body}\n"
-    new_body = existing_body.rstrip("\n") + "\n" + section
+    # Build the section without a leading newline and join with exactly ONE
+    # blank-line separator so a single merge adds one blank line and repeated
+    # merges keep consistent spacing (no growing run of blank lines).
+    section = f"## Update ({date_str})\n\n{body}\n"
+    new_body = existing_body.rstrip("\n") + "\n\n" + section
     merged = dump(metadata, new_body)
 
     result: dict[str, Any] = {

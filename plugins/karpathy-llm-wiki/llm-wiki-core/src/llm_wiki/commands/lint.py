@@ -294,12 +294,26 @@ def _find_contradictions(cfg: WikiConfig, threshold: float = CONTRADICTION_THRES
     if not files:
         return []
 
-    queries = [_read_body(f) for f in files]
+    # Skip notes with empty/whitespace-only bodies before embedding: a blank
+    # body yields no meaningful similarity and only wastes an embedding pass
+    # while producing spurious contradiction candidates. Build the file list and
+    # query list together so their indices stay aligned for the zip below.
+    batch_files: list[Path] = []
+    queries: list[str] = []
+    for f in files:
+        body = _read_body(f)
+        if not body.strip():
+            continue
+        batch_files.append(f)
+        queries.append(body)
+    if not queries:
+        return []
+
     results = check_duplicates_batch(queries, cfg.db_path, cfg.table_name, threshold=threshold)
 
     contradictions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for md_file, res in zip(files, results, strict=True):
+    for md_file, res in zip(batch_files, results, strict=True):
         for match in res.get("matches", []):
             entry = _contradiction_entry(md_file, match, threshold, seen)
             if entry is not None:
@@ -521,7 +535,10 @@ def _top_suggestion(cfg: WikiConfig, md_file: Path, stem: str) -> str | None:
     body = _read_body(md_file)
     if not body:
         return None
-    results = search_index(cfg.db_path, cfg.table_name, query=body, limit=3)
+    try:
+        results = search_index(cfg.db_path, cfg.table_name, query=body, limit=3)
+    except Exception:  # noqa: BLE001  # any backend failure → no suggestion (optional, must not crash --fix)
+        return None
     for r in results:
         other = Path(r["file_path"]).stem if r.get("file_path") else ""
         if other and other != stem:

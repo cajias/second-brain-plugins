@@ -362,6 +362,46 @@ class TestContradictionDetection:
         assert result.exit_code == 0, result.stdout
         assert json.loads(result.stdout)["contradictions"] == []
 
+    def test_excludes_empty_body_notes(self, populated_wiki: Path, monkeypatch):
+        """Whitespace-only-body notes are never embedded nor reported as candidates."""
+        permanent = populated_wiki / "wiki" / "permanent"
+        # A parseable note whose body is whitespace-only -- it must be skipped
+        # *before* the batch so it neither wastes an embedding nor flags.
+        (permanent / "blank-body-note.md").write_text("""\
+---
+id: perm-20260406-blank1
+type: permanent
+knowledge_type: idea
+status: pending
+confidence: low
+scope: project
+tags:
+  - llm
+source: "manual"
+created: "2026-04-06T08:00:00"
+---
+
+""")
+
+        captured: dict[str, list[str]] = {}
+
+        def fake_batch(queries, db_path, table_name, threshold=0.85):
+            captured["queries"] = list(queries)
+            return [{"status": "unique", "top_score": 0.0, "matches": []} for _ in queries]
+
+        monkeypatch.setattr("llm_wiki.commands.lint.check_duplicates_batch", fake_batch)
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(app, ["lint", "--contradictions", "--json"])
+        assert result.exit_code == 0, result.stdout
+
+        # The whitespace body never reaches the embedding batch.
+        assert all(q.strip() for q in captured["queries"])
+        # Only the three non-empty fixture notes were embedded.
+        assert len(captured["queries"]) == 3
+
+        contradictions = json.loads(result.stdout)["contradictions"]
+        assert all(c["file"] != "blank-body-note.md" for c in contradictions)
+
 
 # ---------------------------------------------------------------------------
 # Smart fix-all
@@ -428,3 +468,25 @@ created: "2026-04-09T12:00:00"
         assert result.exit_code == 0, result.stdout
         assert note.read_text() == before
         assert "dry run" in result.stdout.lower()
+
+    def test_fix_survives_vector_backend_failure(self, populated_wiki: Path, monkeypatch):
+        """``--fix`` must not crash if the vector backend dies while suggesting links.
+
+        Orphan suggestions are optional, so a failing ``search_index`` degrades to
+        "no suggestion" (None) rather than propagating and aborting the fix run.
+        """
+
+        def boom(*_args, **_kwargs):
+            msg = "vector backend unavailable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr("llm_wiki.commands.lint.search_index", boom)
+        monkeypatch.chdir(populated_wiki)
+        result = runner.invoke(app, ["lint", "--fix", "--json"])
+        assert result.exit_code == 0, result.stdout
+
+        plan = json.loads(result.stdout)
+        # orphan-note.md is flagged but with no suggested link (backend failed).
+        flagged = {o["file"]: o for o in plan["orphans_flagged"]}
+        assert "orphan-note.md" in flagged
+        assert flagged["orphan-note.md"]["suggested_link_from"] is None

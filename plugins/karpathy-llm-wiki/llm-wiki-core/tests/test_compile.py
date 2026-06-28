@@ -1018,3 +1018,33 @@ class TestMergeInto:
             ["compile", "--merge-into", str(wiki_root / "wiki" / "permanent" / "nope.md"), "--body", "X"],
         )
         assert result.exit_code != 0
+
+    def test_merge_into_single_blank_line_separator(self, populated_wiki: Path, monkeypatch, mock_embedding_model):
+        """Each merge adds exactly one blank line; repeated merges don't accumulate blanks."""
+        monkeypatch.chdir(populated_wiki)
+        target = populated_wiki / "wiki" / "permanent" / "token-refresh-strategy.md"
+
+        first = runner.invoke(
+            app,
+            ["compile", "--merge-into", str(target), "--body", "First update."],
+        )
+        assert first.exit_code == 0, first.output
+        after_first = target.read_text()
+
+        second = runner.invoke(
+            app,
+            ["compile", "--merge-into", str(target), "--body", "Second update."],
+        )
+        assert second.exit_code == 0, second.output
+        after_second = target.read_text()
+
+        # Both updates landed and no run of three-or-more newlines ever appears.
+        assert after_first.count("## Update (") == 1
+        assert after_second.count("## Update (") == 2
+        assert "\n\n\n" not in after_first
+        assert "\n\n\n" not in after_second
+
+        # The separator before each section is exactly one blank line.
+        _, body = parse_file(target)
+        assert "First update.\n\n## Update (" in body
+        assert body.count("\n\n## Update (") == 2
