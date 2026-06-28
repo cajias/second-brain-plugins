@@ -17,3 +17,4 @@ uv-*.lock
 .envrc
 .superpowers/
 .worktrees/
+.claude/settings.local.json
